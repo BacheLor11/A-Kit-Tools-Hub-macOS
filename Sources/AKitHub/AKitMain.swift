@@ -3,6 +3,8 @@ import SwiftUI
 import Carbon.HIToolbox
 import AKitCore
 import AKitStatusKit
+import AKitPluginKit
+import AKitHostKit
 
 @main
 @MainActor
@@ -12,6 +14,11 @@ struct AKitMain {
         let args = CommandLine.arguments
         if args.contains("--selftest") {
             selfTest()
+            return
+        }
+
+        if args.contains("--selftest-plugin") {
+            selfTestPlugin()
             return
         }
 
@@ -100,8 +107,99 @@ struct AKitMain {
         exit(0)
     }
 
-    static func renderSnapshot(to path: String, pageName: String) {
-        let app = NSApplication.shared
+    /// 插件链路自检：读清单 → dlopen → ABI 校验 → 拒绝不匹配 → 崩溃哨兵
+    ///
+    /// 不依赖界面，纯链路验证。跑法：
+    ///   .build/debug/AKitHub --selftest-plugin
+    static func selfTestPlugin() {
+        _ = NSApplication.shared
+
+        let loader = AKPluginLoader()
+        let dir = AKPaths.plugins
+        guard let item = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))?
+            .first(where: { $0.pathExtension == "akitplugin" })
+        else {
+            print("SKIP: \(dir.path) 里没有 .akitplugin")
+            exit(0)
+        }
+
+        final class TestHost: NSObject, AKPluginHost {
+            var lastStatus: String?
+            func requestLayoutRefresh() {}
+            func setStatusText(_ text: String?) { lastStatus = text }
+            func setStatusItemImage(_ image: NSImage?) {}
+            func presentFullPanel(_ pluginId: String) {}
+            func openWindow() {}
+            func emit(_ event: String, payload: [String: String]?) {}
+            func log(_ message: String) {}
+        }
+
+        do {
+            let record = try loader.readRecord(at: item)
+            print("PASS readRecord: \(record.displayName) v\(record.version) · ABI \(record.abiVersion) · \(record.signedTeamId ?? "ad-hoc 签名")")
+
+            let host = TestHost()
+            let loaded = try loader.load(record: record, host: host)
+            print("PASS dlopen: \(loaded.descriptor.pluginId) / \(loaded.descriptor.displayName)")
+
+            guard loaded.descriptor.abiVersion == AKPluginABIVersion else {
+                print("FAIL: 插件自报 ABI \(loaded.descriptor.abiVersion)，宿主是 \(AKPluginABIVersion)")
+                exit(1)
+            }
+            print("PASS abi: 插件与宿主一致（\(AKPluginABIVersion)）")
+
+            // 伪造一个 ABI 更高的清单，必须被拒
+            var future = record
+            future.abiVersion = 999
+            do {
+                _ = try loader.load(record: future, host: host)
+                print("FAIL abiMismatch: 竟然加载成功了，应该拒绝")
+                exit(1)
+            } catch {
+                print("PASS abiMismatch: 已拒绝 —— \(error.localizedDescription)")
+            }
+
+            // 伪造一个不存在的可执行文件，必须报错而不是崩
+            var broken = record
+            broken.executablePath = "/tmp/definitely-not-here-\(UUID().uuidString)"
+            do {
+                _ = try loader.load(record: broken, host: host)
+                print("FAIL dlopenMissing: 竟然加载成功了")
+                exit(1)
+            } catch {
+                print("PASS dlopenMissing: 已拒绝 —— \(error.localizedDescription)")
+            }
+
+            // 崩溃哨兵：模拟「加载到一半崩了」，重启后应该认出肇事者
+            let sentinelURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("akit-sentinel-\(UUID().uuidString).json")
+            let first = AKCrashSentinel(url: sentinelURL)
+            first.begin()
+            first.willLoad("com.test.Bad")
+            let afterCrash = AKCrashSentinel(url: sentinelURL)   // 等价于「重启后读」
+            if afterCrash.suspects == ["com.test.Bad"] {
+                print("PASS sentinel: 认出上次崩在 com.test.Bad")
+            } else {
+                print("FAIL sentinel: 期望 [com.test.Bad]，实际 \(afterCrash.suspects)")
+                exit(1)
+            }
+
+            first.didLoad("com.test.Bad")
+            let afterClean = AKCrashSentinel(url: sentinelURL)
+            print(afterClean.suspects.isEmpty
+                  ? "PASS sentinel: 标记完成后不再是嫌疑"
+                  : "FAIL sentinel: 标记完成后仍有 \(afterClean.suspects)")
+            try? FileManager.default.removeItem(at: sentinelURL)
+
+            exit(0)
+        } catch {
+            print("FAIL: \(error.localizedDescription)")
+            exit(1)
+        }
+    }
+
+    static func renderSnapshot(to path: String, pageName: String) {        let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         app.appearance = NSAppearance(named: .aqua)
         let isPanel = pageName == "panel"
@@ -233,6 +331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
         if let localKeyMonitor { NSEvent.removeMonitor(localKeyMonitor) }
+        // 正常退出才清崩溃哨兵。崩了不会走到这里，下次启动就能认出肇事插件。
+        state.pluginManager.shutdown()
     }
 
     // MARK: 状态栏

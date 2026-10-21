@@ -298,6 +298,80 @@ func makeFullView() -> NSView
 
 ---
 
+## 4.5 统一实体模型：工具不是插件，工具**有**插件
+
+这是整个底层的地基，不然后面 UI 怎么排都是错的。
+
+一个工具 = 两层信息：
+
+| 层 | 来源 | 内容 |
+|---|---|---|
+| 安装层 | 远程清单 + 磁盘扫描 | 装在哪、什么版本、有无新版、从哪来的 |
+| 运行层 | 插件 dlopen / 老协议 socket | 界面、落点、加载状态、崩溃 |
+
+**合并键：`pluginId == 工具 bundleId`**（这就是为什么接入文档里反复强调这一点）。
+对不上时退回路径包含判断，兼容早期没守约定的插件。
+
+```swift
+// AppState 里的唯一真相
+var entities: [ToolEntity] {
+    ToolEntityIndex.merge(entries: allEntries,
+                          plugins: pluginManager.plugins,
+                          connected: connected,
+                          isDisabled: { pluginManager.isDisabled($0) })
+}
+```
+
+形态只有四种，但都是同一个实体：
+
+```
+both        装了 app，也有插件      面板里展开它自己的界面，也能独立启动
+pluginOnly  只有插件，没有 app      只能活在 A-Kit 里
+appOnly     只有 app，没插件        面板里只能「打开」
+legacy      只靠老协议在线          面板里显示一行状态
+```
+
+**面板、工具页、详情页都必须读 `entities`，不要分别读 `entries` 和 `pluginManager.plugins`。**
+分开读的后果是同一个工具在两处各出现一次、版本还对不上——之前就是用字符串前缀猜关联硬凑的。
+
+### 安装 / 卸载自动接管插件
+
+`both` 模式下插件住在 `Xxx.app/Contents/PlugIns/`，A-Kit 安装时**建软链而不是拷贝**：
+
+```
+~/Library/Application Support/A-Kit/Plugins/Xxx.akitplugin
+  → ~/Applications/Xxx.app/Contents/PlugIns/Xxx.akitplugin
+```
+
+- app 更新 → 插件跟着更新，永远不会版本错位
+- 卸载 → 只拔掉指向这个 app 的软链，别人装的插件不动
+- app 被手动删除 → 软链悬空，下次扫描自动清理
+
+### 单实例仲裁
+
+插件的 `activate()` 之前会先检查工具的独立 app 是否在跑：
+
+| 情况 | 行为 |
+|---|---|
+| app 没跑 | 插件 `activate()`，正式接管 |
+| app 在跑 | 插件**加载但不激活**，标记「正在独立运行」，面板给「接管」按钮 |
+| 点接管 | 请 app 优雅退出 → 等它真退 → 插件才激活 |
+
+两个实例各跑一份引擎、同时清理同一块磁盘，那不是性能问题，是数据安全问题。
+
+### 自检
+
+```bash
+swift build --disable-sandbox --product AKitHub
+.build/debug/AKitHub --selftest-plugin     # 插件链路
+.build/debug/AKitHub --selftest            # 老协议链路
+```
+
+`--selftest-plugin` 覆盖：读清单 → `dlopen` → ABI 一致 → **拒绝 ABI 不匹配** →
+**拒绝不存在的可执行文件（报错而不是崩）** → 崩溃哨兵认出肇事插件 → 标记完成后解除嫌疑。
+
+---
+
 ## 5. 分发与安装
 
 ### 5.1 三种安装模式（manifest 里声明）

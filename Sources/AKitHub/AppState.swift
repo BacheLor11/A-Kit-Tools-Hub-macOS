@@ -4,6 +4,7 @@ import AppKit
 import Combine
 import AKitCore
 import AKitStatusKit
+import AKitHostKit
 
 @MainActor
 final class AppState: ObservableObject {
@@ -123,6 +124,16 @@ final class AppState: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
+        // 事件总线：插件 ↔ 老协议工具互通
+        pluginManager.onRelayEvent = { [weak self] from, name, payload in
+            self?.server.emit(name, payload: payload ?? [:])
+            // 也回给自己以外的插件
+            self?.pluginManager.broadcast(name: name, payload: payload ?? [:], from: from)
+        }
+        server.onEvent = { [weak self] name, payload, from in
+            self?.pluginManager.broadcast(name: name, payload: payload, from: from)
+        }
+
         guard bootstrap else { return }
         Task {
             await loadManifest()
@@ -180,6 +191,23 @@ final class AppState: ObservableObject {
 
     /// 清单 + 扫描结果 + 运行时兜底，界面统一看这个
     var allEntries: [ToolEntry] { entries + runtimeEntries }
+
+    /// **唯一真相**：安装层 + 运行层合并后的工具列表。
+    ///
+    /// 面板、工具页、详情页都应该读这个，不要再分别读 `entries` / `pluginManager.plugins`，
+    /// 否则同一个工具会在两处各出现一次、版本还对不上。
+    var entities: [ToolEntity] {
+        ToolEntityIndex.merge(
+            entries: allEntries,
+            plugins: pluginManager.plugins,
+            connected: connected,
+            isDisabled: { [weak self] id in self?.pluginManager.isDisabled(id) ?? false }
+        )
+    }
+
+    func entity(_ id: String) -> ToolEntity? {
+        entities.first { $0.id == id }
+    }
 
     var filtered: [ToolEntry] {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return allEntries }
@@ -512,6 +540,7 @@ final class AppState: ObservableObject {
                 job = nil
                 showToast("\(spec.name) \(isUpdate ? "已更新到" : "已安装") \(channel.version)", ok: true)
                 await rescan()
+                afterInstall(installedURL)
             } catch {
                 job = nil
                 AKLogInfo("install", "失败：\(error.localizedDescription)")
@@ -522,13 +551,40 @@ final class AppState: ObservableObject {
 
     func uninstall(_ entry: ToolEntry, alsoSupportFiles: Bool) {
         guard let app = entry.installed else { return }
+        let appURL = app.path
         do {
-            try Installer.uninstall(app.path, bundleId: app.bundleId, alsoSupportFiles: alsoSupportFiles)
+            try Installer.uninstall(appURL, bundleId: app.bundleId, alsoSupportFiles: alsoSupportFiles)
+            afterUninstall(appURL)
             showToast("\(entry.name) 已移到废纸篓", ok: true)
             Task { await rescan() }
         } catch {
             showToast("卸载失败：\(error.localizedDescription)", ok: false)
         }
+    }
+
+    // MARK: 插件随安装 / 卸载
+
+    /// 工具装好后，把包里的 `.akitplugin` 软链进 A-Kit 的插件目录。
+    ///
+    /// 软链而不是拷贝：app 更新时插件自动跟着更新，不会出现版本错位。
+    private func afterInstall(_ appURL: URL) {
+        do {
+            let links = try PluginInstallBridge.link(from: appURL, into: AKPaths.plugins)
+            guard !links.isEmpty else { return }
+            AKLogInfo("plugin", "\(appURL.lastPathComponent) 带来 \(links.count) 个插件")
+            pluginManager.reload()
+            onLayoutChanged?()
+        } catch {
+            AKLogInfo("plugin", "插件注册失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func afterUninstall(_ appURL: URL) {
+        let removed = PluginInstallBridge.unlink(for: appURL, in: AKPaths.plugins)
+        guard !removed.isEmpty else { return }
+        AKLogInfo("plugin", "卸载 \(appURL.lastPathComponent)，拔掉 \(removed.count) 个插件")
+        pluginManager.reload()
+        onLayoutChanged?()
     }
 
     /// 从源码重建并覆盖安装（Dev 模式）
