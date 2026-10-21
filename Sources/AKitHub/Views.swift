@@ -250,7 +250,7 @@ private struct ToolsPage: View {
                 HStack(alignment: .top) {
                     PageHeader(kicker: "A-KIT · TOOLS",
                                title: "工具",
-                               lede: "自己写的 macOS 工具都在这里。装、更、删、看界面，一处管完。")
+                               lede: "macOS 工具都在这儿：装、更、删、看界面。接了插件的工具，直接用它原本的菜单栏界面。")
                     Spacer()
                     SearchBar().padding(.top, 18)
                 }
@@ -896,7 +896,7 @@ private struct ThirdPartyPage: View {
                         .foregroundColor(ak.ink)
                     Label("按住 ⌘ 拖动菜单栏图标，可以把它移出菜单栏（macOS 自带）", systemImage: "1.circle")
                     Label("系统设置 → 菜单栏，可以单独关闭系统项目的显示", systemImage: "2.circle")
-                    Label("如果你自己的工具接入了 A-Kit，它的图标会自动收进 A-Kit，无需手动处理", systemImage: "3.circle")
+                    Label("如果你的工具接入了 A-Kit（插件或协议），它的图标会自动收进来，无需手动处理", systemImage: "3.circle")
                 }
                 .font(AKFont.sans(12.5))
                 .foregroundColor(ak.inkSoft)
@@ -1136,8 +1136,10 @@ private struct SettingsPage: View {
                 }
 
                 section("关于") {
-                    Text("A-Kit · 自己写的小工具，自己收着。")
+                    Text("A-Kit · macOS 工具的统一管理器")
                         .font(AKFont.sans(12.5)).foregroundColor(ak.inkSoft)
+                    Text("装、更、删、接管菜单栏。工具原本的界面原样呈现，不重写、不套壳。")
+                        .font(AKFont.sans(11.5)).foregroundColor(ak.inkSoft.opacity(0.8))
                     Text("日志：\(AKPaths.logs.appendingPathComponent("akit.log").path)")
                         .font(AKFont.mono(10.5)).foregroundColor(ak.inkSoft.opacity(0.7))
                 }

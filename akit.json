@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "akit",
   "name": "A-Kit",
-  "tagline": "自己写的小工具，自己收着。",
+  "tagline": "macOS 工具的统一管理器：装、更、删、接管菜单栏，一处管完。",
   "bundleId": "com.aibao.AKitHub",
   "category": "tool",
   "minOS": "13.0",
