@@ -120,6 +120,42 @@ public enum ManifestStore {
         return m.tools
     }
 
+    /// 把一条工具写进本机私有清单（面板上点「登记」时用）。
+    ///
+    /// 只动 `tools.local.json`，不碰远程清单、不碰别人的仓库。
+    /// 已存在同 bundleId 的条目时替换它，返回是否真的写盘。
+    @discardableResult
+    public static func registerLocal(_ spec: ToolSpec) -> Bool {
+        AKPaths.ensure()
+        ensureLocalSkeleton()
+        var tools = loadLocal()
+        if let i = tools.firstIndex(where: { $0.bundleId == spec.bundleId }) {
+            tools[i] = spec
+        } else {
+            tools.append(spec)
+        }
+        return saveLocal(tools)
+    }
+
+    /// 整份重写本机私有清单。会保留骨架里那段 `_hint` 说明。
+    @discardableResult
+    public static func saveLocal(_ tools: [ToolSpec]) -> Bool {
+        AKPaths.ensure()
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? enc.encode(Manifest(schemaVersion: 1, tools: tools)) else { return false }
+        var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        // _hint 不是模型字段，重新拼回去，别把写给用户看的注释弄丢
+        if let old = try? Data(contentsOf: AKPaths.localToolsFile),
+           let oldObj = (try? JSONSerialization.jsonObject(with: old)) as? [String: Any],
+           let hint = oldObj["_hint"] {
+            obj["_hint"] = hint
+        }
+        guard let out = try? JSONSerialization.data(withJSONObject: obj,
+                                                    options: [.prettyPrinted, .sortedKeys]) else { return false }
+        return (try? out.write(to: AKPaths.localToolsFile)) != nil
+    }
+
     /// 第一次用到时写一个带注释的空骨架，省得用户去猜格式
     public static func ensureLocalSkeleton() {
         guard !FileManager.default.fileExists(atPath: AKPaths.localToolsFile.path) else { return }

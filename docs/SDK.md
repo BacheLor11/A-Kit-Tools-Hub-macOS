@@ -91,11 +91,22 @@ AKHubClient.shared.onInvoke = { itemId in
 ### 2.5 状态变了要推
 
 ```swift
-// 菜单结构或勾选状态变了
+// 菜单结构或勾选状态变了：整包重发
 AKHubClient.shared.update(menu: newMenu)
-// 只改状态文字
-AKHubClient.shared.update(status: "录制中 00:12")
+// 只改状态文字：轻量通道
+AKHubClient.shared.pushStatus("录制中 00:12")
 ```
+
+两种的区别要说清楚，用错了会很难受：
+
+| | `update(menu:)` | `pushStatus(_:)` |
+|---|---|---|
+| 作用 | 重发整个注册包 | 只改状态文字 |
+| Hub 侧 | 重建这个工具的条目 | 改一个字段 |
+| 适合 | 菜单项增删、勾选变化 | CPU、内存、进度、计时这类每秒都在动的数字 |
+| 开销 | 中（含菜单树） | 极小，文本没变就不发 |
+
+`update(status:)` 仍然可用，但它内部就是整包重发。**每秒刷一次状态却用 `update(status:)`，等于让 Hub 每秒重建一次你的条目，日志也会被刷满**——A-Sweep 早期就这么踩过。
 
 不推的话，A-Kit 里显示的还是上一次注册的内容。
 
@@ -269,11 +280,27 @@ printf '{"jsonrpc":"2.0","method":"register","params":{"bundleId":"com.test.x","
 | 现象 | 原因 |
 |---|---|
 | 图标不消失 | 没设 `onConnectionChange`，或 Hub 没在跑（`AKHubClient.isHubRunning` 可查） |
-| 面板里没我的工具 | `start()` 之后再没调用过；或 `bundleId` 为空 |
+| 面板里没我的工具 | 见下一节：接入是三层，缺一层就没卡片 |
+| 面板里有张灰底「未登记」卡片 | 协议通了，但 App 不在扫描目录、或 `bundleId` 没进任何清单。点卡片上的「登记」即可 |
 | 点了没反应 | `onInvoke` 里的 `id` 和注册时给的不一致 |
-| 状态一直是旧的 | 改完没调 `update(status:)` |
+| 状态一直是旧的 | 改完没调 `pushStatus(_:)` / `update(status:)` |
+| 日志里 register 每秒一条 | 高频刷新走了 `update(status:)`，改用 `pushStatus(_:)` |
 | 收不到事件 | `subscribes` 里没声明这个名字 |
 | 从链接装失败，提示「和清单对不上」 | `akit.json` 的 `bundleId` 和实际上架的包不一致 |
+
+### 为什么面板里没有我的工具
+
+接入其实是三件事。**只做第一件，卡片不会出现**——0.3.1 及以前就是这样：日志里明明 `register` 成功，面板里一张卡都没有，而你的图标已经让出去了，用户等于找不到入口。
+
+| 层 | 做什么 | 缺了会怎样 |
+|---|---|---|
+| 协议层 | 调 `start(info:)` 注册 | 日志没有 `register`，A-Kit 完全不知道你 |
+| 安装层 | `.app` 在 `scanDirectories` 里（默认 `/Applications`、`~/Applications`） | 扫不到 App，就没有名字、版本和打开路径 |
+| 登记层 | `bundleId` 在远端清单 / `tools.local.json` / SDK 导入列表里 | 扫到了也会被过滤掉 |
+
+**0.4.0 起有兜底**：只要协议层通了，即使没装进扫描目录、也没登记，面板里也会出现一张标着「未登记」的卡片——能调菜单、能点开，卡片上还有「登记到本机清单」，点一下写进 `tools.local.json`，下次启动就正式收录。
+
+但别指望兜底。正式分发的工具应该老实做满三层。
 
 ---
 

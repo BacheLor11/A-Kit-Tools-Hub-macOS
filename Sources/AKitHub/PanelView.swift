@@ -16,7 +16,11 @@ struct PanelView: View {
     @State private var query = ""
 
     private var visible: [ToolEntry] {
-        var list = state.entries.filter { $0.isInstalled && !state.layout.isHidden($0.id) }
+        // isRuntimeOnly：SDK 注册了但清单/扫描没收录 —— 也要给一张卡，
+        // 否则它的菜单栏图标已经让给 Hub，用户就彻底找不到入口了
+        var list = state.allEntries.filter {
+            ($0.isInstalled || $0.isRuntimeOnly) && !state.layout.isHidden($0.id)
+        }
         if !query.isEmpty {
             let q = query.lowercased()
             list = list.filter { $0.name.lowercased().contains(q) }
@@ -31,7 +35,7 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if state.entries.filter({ $0.isInstalled }).count > 4 {
+            if state.allEntries.filter({ $0.isInstalled || $0.isRuntimeOnly }).count > 4 {
                 searchRow
             }
             ScrollView {
@@ -142,6 +146,22 @@ private struct ToolCard: View {
     private var bundleId: String { entry.installed?.bundleId ?? entry.spec?.bundleId ?? entry.id }
     private var info: AKToolInfo? { state.connected[bundleId] }
 
+    /// 只靠 SDK 接进来、还没被清单/扫描收录
+    private var unregistered: Bool { entry.isRuntimeOnly }
+
+    private var dotColor: Color {
+        if unregistered { return ak.accent2.opacity(0.8) }
+        return info == nil ? ak.border : Color.green.opacity(0.8)
+    }
+
+    private var subtitle: String {
+        if unregistered {
+            if let s = info?.status, !s.isEmpty { return "未登记 · \(s)" }
+            return "未登记"
+        }
+        return info?.status ?? (info == nil ? "未接入" : "已接入")
+    }
+
     /// 卡片上平铺的常用项：取工具菜单里前 3 个可直接点击的项
     private var quickItems: [AKMenuItem] {
         guard let info else { return [] }
@@ -159,9 +179,9 @@ private struct ToolCard: View {
                     .lineLimit(1)
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(info == nil ? ak.border : Color.green.opacity(0.8))
+                        .fill(dotColor)
                         .frame(width: 4, height: 4)
-                    Text(info?.status ?? (info == nil ? "未接入" : "已接入"))
+                    Text(subtitle)
                         .font(AKFont.sans(10))
                         .foregroundColor(ak.inkSoft)
                         .lineLimit(1)
@@ -184,6 +204,24 @@ private struct ToolCard: View {
                         )
                 }
                 .buttonStyle(.plain)
+            }
+
+            if unregistered {
+                Button {
+                    state.registerTool(bundleId: bundleId)
+                } label: {
+                    Text("登记")
+                        .font(AKFont.sans(10, weight: .medium))
+                        .foregroundColor(ak.accent2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .stroke(ak.accent2.opacity(0.55), lineWidth: 0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("写进本机清单 tools.local.json，下次启动也认得")
             }
 
             Button {
