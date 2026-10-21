@@ -45,17 +45,20 @@ RELEASES = {
     "demo/Empty": None,
 }
 
-# akit.json（按 tag 提供）
+# akit.json（按 ref 提供，用来复刻「tag 上没有、默认分支上才有」这种真实情况）
 MANIFESTS = {
     "demo/MyTool": None,   # 故意没有，测「无自描述」路径
     "demo/WithManifest": {
-        "schemaVersion": 1,
-        "id": "mytool-pro",
-        "name": "MyTool Pro",
-        "tagline": "带自描述的演示工具",
-        "bundleId": "com.aibao.DemoTool",
-        "asset": "*-universal.zip",
-        "statusBar": True,
+        "refs": ["main"],
+        "json": {
+            "schemaVersion": 1,
+            "id": "mytool-pro",
+            "name": "MyTool Pro",
+            "tagline": "带自描述的演示工具",
+            "bundleId": "com.aibao.DemoTool",
+            "asset": "*-universal.zip",
+            "statusBar": True,
+        },
     },
 }
 
@@ -89,14 +92,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"message": "Not Found"}, 404)
             return self._json(rel)
 
+        # 仓库信息：给「读 akit.json 时该用哪个分支」用
+        if path.startswith("/repos/") and "/releases/" not in path:
+            slug = path[len("/repos/"):]
+            if slug in RELEASES:
+                return self._json({"default_branch": "main", "full_name": slug})
+            return self._json({"message": "Not Found"}, 404)
+
         # raw：/<owner>/<repo>/<ref>/akit.json
         if path.endswith("/akit.json") or path.endswith("/tool.json"):
             parts = [p for p in path.split("/") if p]
             slug = "/".join(parts[:2])
-            m = MANIFESTS.get(slug)
-            if not m:
+            ref = parts[2] if len(parts) > 2 else ""
+            entry = MANIFESTS.get(slug)
+            if not entry:
                 return self._json({"message": "Not Found"}, 404)
-            return self._json(m)
+            if ref not in entry["refs"]:
+                return self._json({"message": "Not Found"}, 404)
+            return self._json(entry["json"])
 
         # 静态文件
         f = STATIC / path.lstrip("/")
