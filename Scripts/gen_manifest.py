@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""生成可供 A-Kit「从链接安装 / 清单更新」使用的 manifest.json。
+"""生成 A-Kit 官方 Release 用的 manifest.json。
 
-读 Resources/seed-manifest.json，把 A-Kit 自己作为一条工具插到最前面
-（装了 A-Kit 的人可以从清单里更新 A-Kit 本身），再写出去。
+内置清单（Resources/seed-manifest.json）是刻意留空的：本仓库不含任何具体工具。
+所以这里产出的清单默认**只有 A-Kit 自己**一条 —— 装了 A-Kit 的人因此能收到自更新。
+工具不靠清单分发，靠各自仓库的链接。
+
+若你 fork 后要自带一份工具集，把工具写进 seed-manifest.json 的 tools 里即可，
+这个脚本会把它们一起带进官方清单。
 
 用法：
   python3 Scripts/gen_manifest.py \

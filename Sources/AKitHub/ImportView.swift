@@ -96,6 +96,17 @@ struct ImportSheet: View {
                             .font(AKFont.sans(12))
                             .foregroundColor(ak.inkSoft)
                             .fixedSize(horizontal: false, vertical: true)
+                        if err.contains("Token") || err.contains("限流") {
+                            Button("去 GitHub 生成一个只读 Token") {
+                                if let url = URL(string: "https://github.com/settings/tokens/new?description=A-Kit&scopes=") {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                            Text("生成后粘到「设置 → GitHub 安装 → 访问令牌」，不用勾任何权限。")
+                                .font(AKFont.sans(11))
+                                .foregroundColor(ak.inkSoft.opacity(0.75))
+                        }
                     }
                     .padding(.top, 12)
                 } else if let c = state.importCandidate {

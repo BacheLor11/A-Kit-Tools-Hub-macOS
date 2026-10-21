@@ -109,6 +109,39 @@ public enum ManifestStore {
         return nil
     }
 
+    /// 本机私有清单：`~/Library/Application Support/A-Kit/tools.local.json`。
+    ///
+    /// 用来登记「只在这台机器上成立」的东西 —— 本地源码目录（Dev 重建 / 热重载）、
+    /// 还没开源的小工具、fork 前的私货。它跟仓库、跟远程清单都无关，
+    /// 所以开源出去的时候不会把谁的家目录泄漏掉。
+    public static func loadLocal() -> [ToolSpec] {
+        guard let data = try? Data(contentsOf: AKPaths.localToolsFile),
+              let m = try? JSONDecoder().decode(Manifest.self, from: data) else { return [] }
+        return m.tools
+    }
+
+    /// 第一次用到时写一个带注释的空骨架，省得用户去猜格式
+    public static func ensureLocalSkeleton() {
+        guard !FileManager.default.fileExists(atPath: AKPaths.localToolsFile.path) else { return }
+        AKPaths.ensure()
+        let skeleton = """
+        {
+          "schemaVersion": 1,
+          "tools": [],
+
+          "_hint": [
+            "本机私有登记，不会进 Git，也不会同步到任何地方。",
+            "工具装在 ~/Applications 但不在任何清单里、或者要盯本地源码热重载时，往 tools 里加一条：",
+            "{ \\"id\\": \\"mytool\\", \\"name\\": \\"MyTool\\", \\"bundleId\\": \\"com.example.MyTool\\",",
+            "  \\"channels\\": { \\"stable\\": { \\"version\\": \\"1.0.0\\" } },",
+            "  \\"source\\": { \\"type\\": \\"swiftpm\\", \\"path\\": \\"~/Code/MyTool\\", \\"appPath\\": \\"build/MyTool.app\\" } }",
+            "不需要 source 的话，只写 id / name / bundleId / channels 就够。"
+          ]
+        }
+        """
+        try? skeleton.write(to: AKPaths.localToolsFile, atomically: true, encoding: .utf8)
+    }
+
     public static func loadRemote(_ urlString: String) async throws -> Manifest {
         guard let url = URL(string: urlString) else {
             throw URLError(.badURL)

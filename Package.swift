@@ -7,9 +7,10 @@ let package = Package(
     products: [
         .executable(name: "AKitHub", targets: ["AKitHub"]),
         .executable(name: "akit", targets: ["AKitCLI"]),
-        .executable(name: "DemoTool", targets: ["AKitDemoTool"]),
         .library(name: "AKitCore", targets: ["AKitCore"]),
         .library(name: "AKitStatusKit", targets: ["AKitStatusKit"]),
+        // 注意：DemoTool 不出现在 products 里 —— 它是协议自测用的夹具，
+        // 不是这个项目要分发的「工具」。真正的工具各自在自己的仓库。
     ],
     targets: [
         .target(name: "AKitStatusKit", path: "Sources/AKitStatusKit"),

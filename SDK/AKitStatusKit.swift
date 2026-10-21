@@ -174,8 +174,8 @@ final class AKHubSocket {
 /// AKHubClient.shared.onConnectionChange = { connected in
 ///     statusItem.isVisible = !connected
 /// }
-/// AKHubClient.shared.start(info: AKToolInfo(bundleId: "com.aibao.NetPulse",
-///                                           name: "NetPulse",
+/// AKHubClient.shared.start(info: AKToolInfo(bundleId: "com.example.MyTool",
+///                                           name: "MyTool",
 ///                                           version: "1.2.0",
 ///                                           menu: myMenu))
 /// ```

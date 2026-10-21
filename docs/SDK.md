@@ -1,7 +1,9 @@
 # 接入 A-Kit · 开发者指南
 
-> 适用 A-Kit 0.2+ · 协议 `schemaVersion: 1`
+> 适用 A-Kit 0.3+ · 协议 `schemaVersion: 1`
 > A-Kit 是 macOS 菜单栏工具的统一控制台。接入之后，你的工具可以把菜单交给 A-Kit 渲染、跟别的工具收发事件，还能被用户用一个 GitHub 链接直接装上。
+>
+> **你的工具留在你自己的仓库里**。A-Kit 不收录工具源码，两侧只靠 SDK + `akit.json` + 一个 Release 发生关系；仓库规范见 [TOOL-REPO.md](TOOL-REPO.md)。
 
 ---
 
@@ -32,7 +34,7 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.2.0")
+    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.3.0")
 ],
 targets: [
     .target(name: "MyTool", dependencies: [

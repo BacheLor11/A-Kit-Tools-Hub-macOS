@@ -11,6 +11,33 @@
 
 ---
 
+## 这个仓库里有什么，没有什么
+
+A-Kit 只做**引擎**。工具都在各自的仓库里，谁也不捆绑谁。
+
+```
+A-Kit（本仓库）                     工具仓库（各自独立）
+├── Hub.app     图形界面 / 菜单栏    ├── MyTool.app    自己的 app
+├── akit        CLI                 ├── akit.json     自描述（名字、bundle id、挑哪个包）
+├── SDK/        单文件接入库         └── Release       zip 里躺着 .app
+└── docs/       协议与规范                    │
+        │                                    │
+        └──────── 粘一个 GitHub 链接 ─────────┘
+                  预览 → 安装 → 记来源 → 以后能查更新
+```
+
+**没有：** 任何具体工具的源码、任何人的本机路径、一份「官方推荐工具清单」。
+内置清单是**刻意留空**的（`Resources/seed-manifest.json`），只当格式示例；
+官方 Release 里的 `manifest.json` 只登记 A-Kit 自己，用于自更新。
+
+**有：** 一套让「别人的工具也能被装上、被代管」的约定 —— 见
+[工具仓库该长什么样](docs/TOOL-REPO.md)。
+
+> 换句话说：装了 A-Kit，不代表就有工具；工具得你自己粘链接装。
+> 而工具就算一辈子不装 A-Kit，也照常能用。
+
+---
+
 ## 它能干什么
 
 **① 工具管理**
@@ -91,37 +118,58 @@ A-Kit 的选择：
 
 ---
 
-## 接入自己的工具
+## 把别的工具接进来
 
-完整文档：[`docs/SDK.md`](docs/SDK.md)。单文件 SDK 在 [`SDK/`](SDK/)，核心就三段：
+**在你自己的仓库里做三件事**，做完这个工具就「已接入」了 —— 别人在 A-Kit 里粘它的地址就能装：
+
+**① 复制 SDK**（单文件，只 `import Foundation`，不进你的依赖树）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BacheLor11/A-Kit/main/SDK/AKitStatusKit.swift \
+  -o Sources/MyTool/Vendor/AKitStatusKit.swift
+```
+
+**② 五行接入** —— 关键是「谁代管谁显示」，以及**没装 A-Kit 时效果必须等于零**
 
 ```swift
 import AKitStatusKit
 
 AKHubClient.shared.onConnectionChange = { connected in
-    statusItem.isVisible = !connected      // 谁代管谁显示
+    item.isVisible = !connected          // Hub 接管了 → 自己的图标让位；Hub 没了 → 自己挂回来
 }
 AKHubClient.shared.onInvoke = { itemId in handle(itemId) }
 AKHubClient.shared.start(info: AKToolInfo(
-    bundleId: "com.aibao.NetPulse", name: "NetPulse", version: "1.2.0",
-    status: "12.4 KB/s", menu: myMenuModel()))
+    bundleId: Bundle.main.bundleIdentifier ?? "",
+    name: "MyTool",
+    version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0",
+    menu: myMenuModel()))
 ```
 
-`AKitStatusKit` 是单文件库（只 import Foundation），可以直接复制进项目，不强制 SwiftPM。
-
-想被「从链接安装」识别，在仓库根目录放一个 `akit.json`：
+**③ 仓库根放 `akit.json`，发一个 Release（zip 里第一层是 `.app`）**
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "netpulse",
-  "name": "NetPulse",
-  "bundleId": "com.aibao.NetPulse",
-  "tagline": "菜单栏里的实时网速监控",
-  "asset": "NetPulse-*.zip",
+  "id": "mytool",
+  "name": "MyTool",
+  "tagline": "一句话说明这个工具干什么",
+  "bundleId": "com.example.MyTool",
+  "asset": "MyTool-*.zip",
   "statusBar": { "supported": true }
 }
 ```
+
+然后自测一遍，不用真装：
+
+```bash
+akit inspect https://github.com/you/MyTool     # 只看解析结果，不下载
+```
+
+细节全在 **[docs/TOOL-REPO.md](docs/TOOL-REPO.md)**（目录结构、Release 命名、发版 workflow、
+`akit.json` 每个字段、打勾清单、别做的事）。协议与 API 全量在 [docs/SDK.md](docs/SDK.md)。
+
+> 边界提醒：A-Kit 不打包你的工具，你的工具也不要打包 A-Kit。
+> 那个「可选上游」关系是单向的 —— 工具能独立活，才允许被接管。
 
 ---
 
@@ -137,7 +185,10 @@ bash Scripts/build.sh --release          # 出 zip + sha256
 > `--disable-sandbox` 是因为 Xcode 26/27 的 SwiftPM 编译沙箱在某些环境下会报
 > `sandbox-exec: sandbox_apply: Operation not permitted`。
 
-环境：macOS 13+，Xcode 26+（Swift 6）。没有第三方依赖，图标全部脚本生成：
+环境：macOS 13+，Xcode 26+（Swift 6）。没有第三方依赖。
+
+App 图标和菜单栏 template 图标已经生成好、提交在 `Resources/`（`AppIcon.icns` / `MenuBarIcon.png`），
+所以构建**不需要 Python**。只有想换图标时才跑脚本（这条路径需要 Pillow）：
 
 ```bash
 python3 Scripts/make_app_icon.py Resources/MarkA.png build       # App 图标
@@ -151,35 +202,41 @@ python3 Scripts/make_menubar_icon.py Resources/MarkA.png build   # 菜单栏 tem
 ```bash
 ./.build/release/AKitHub --selftest        # 注册 / 下发 / 事件三通道
 ./.build/release/AKitHub --snapshot out.png tools   # 离屏渲染任意页面
-./.build/release/DemoTool                  # 一个真的会连上来的演示工具
+./.build/release/DemoTool                  # 协议夹具：一个真的会连上来的假工具
 ```
+
+> `DemoTool` 是测试夹具，不是产品。它不出现在 SwiftPM products 里，也不会被打进 A-Kit.app ——
+> 本仓库不分发任何工具，这条线得划清楚。
 
 ---
 
 ## 清单格式
 
+内置清单是空的（只有格式）。下面这种结构用在**你自己的清单**里 —— fork 后自建工具集，
+或者团队内部分发。粘 GitHub 链接装进来的工具不需要写清单，`imported.json` 会自动维护。
+
 ```json
 {
   "schemaVersion": 1,
   "tools": [{
-    "id": "netpulse",
-    "name": "NetPulse",
-    "tagline": "菜单栏里的实时网速监控",
-    "bundleId": "com.aibao.NetPulse",
+    "id": "mytool",
+    "name": "MyTool",
+    "tagline": "一句话说明",
+    "bundleId": "com.example.MyTool",
     "statusBar": { "supported": true },
     "channels": {
       "stable": {
         "version": "1.2.0", "build": 12, "minOS": "13.0",
-        "url": "https://.../NetPulse-1.2.0.zip",
+        "url": "https://.../MyTool-1.2.0.zip",
         "sha256": "…", "notes": "修复…"
       }
-    },
-    "source": { "type": "swiftpm", "path": "~/Code/NetPulse", "appPath": "NetPulse.app" }
+    }
   }]
 }
 ```
 
-`source` 是可选的本地方案，用于 Dev 模式和热重载。清单地址在「设置」里可改，fork 之后可以用自己的。
+`source`（`{"type":"swiftpm","path":"~/Code/MyTool"}`）是 Dev 重建 / 热重载用的，**别写进仓库** ——
+那是每台机器自己的事，写到 `tools.local.json` 里（见下）。清单地址在「设置」里可改，fork 之后可以用自己的。
 
 ---
 
@@ -191,6 +248,7 @@ python3 Scripts/make_menubar_icon.py Resources/MarkA.png build   # 菜单栏 tem
 ├── settings.json
 ├── layout.json         # 菜单栏分组 / 隐藏状态
 ├── imported.json       # 从链接装进来的工具（来源、tag、产物）
+├── tools.local.json    # 本机私有登记：本地源码路径等，不进 Git
 ├── manifest.cache.json
 ├── Backups/<工具>/<版本>/
 ├── Downloads/
@@ -201,7 +259,9 @@ python3 Scripts/make_menubar_icon.py Resources/MarkA.png build   # 菜单栏 tem
 
 ## 已知限制
 
+- **不内置工具**：这是设计，不是缺功能。要工具就粘链接
 - 第三方图标接管：不支持（原因见上）
+- 只认 Release 产物：不跑仓库里的安装脚本，`.pkg` 一律拒绝（不代跑 sudo）
 - GitHub API 未登录时每 IP 每小时 60 次，容易限流 → 设置里可填只读 Token
 - 全局快捷键改了要重启 app 生效
 - ad-hoc 签名：把 app 发给别人会被 Gatekeeper 拦（自己机器没问题）
@@ -215,6 +275,7 @@ python3 Scripts/make_menubar_icon.py Resources/MarkA.png build   # 菜单栏 tem
 - [x] 源码重建 + 热重载
 - [x] 从 GitHub / 直链安装，带来源记忆与更新检查
 - [x] 单文件 SDK + 接入文档 + akit.json 规范
+- [x] 项目边界：工具各自独立仓库，本仓库只放引擎；本机私有登记挪到 `tools.local.json`
 - [ ] 使用统计页（三个月没开 → 建议卸载）
 - [ ] 与 askb.app 博客打通（发版自动生成更新日志）
 

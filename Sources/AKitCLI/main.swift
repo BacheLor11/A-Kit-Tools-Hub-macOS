@@ -29,6 +29,13 @@ func currentEntries() -> [ToolEntry] {
     let settings = AKSettings.load()
     let imported = ImportedStore.load()
     var tools = loadManifestSync()?.tools ?? []
+
+    // 本机私有登记：同 id 覆盖，新的追加（和图形界面一致）
+    for local in ManifestStore.loadLocal() {
+        if let i = tools.firstIndex(where: { $0.id == local.id }) { tools[i] = local }
+        else { tools.append(local) }
+    }
+
     let existing = Set(tools.map(\.id))
     tools += imported.filter { !existing.contains($0.id) }.map { $0.spec() }
     let manifest: Manifest? = tools.isEmpty ? nil : Manifest(tools: tools)
@@ -102,9 +109,13 @@ func usage() {
       akit imported             列出从链接装进来的工具
       akit forget <id>          忘掉某个链接安装工具的来源（不删 app）
       akit doctor               体检所有已装工具
+      akit local                本机私有登记（本地源码 / 没进清单的工具）
       akit export <文件>        导出配置（换 Mac 用）
       akit import <文件>        导入配置
       akit support              打印数据目录
+
+    A-Kit 本身不带工具。工具都在各自的仓库，装的时候把它的
+    GitHub 链接粘进来就行：akit install https://github.com/owner/repo
     """)
 }
 
@@ -285,6 +296,21 @@ case "import":
        let layout = try? JSONDecoder().decode(AKLayout.self, from: ld) {
         layout.save()
         print("✓ 菜单栏布局已导入")
+    }
+
+case "local":
+    ManifestStore.ensureLocalSkeleton()
+    let list = ManifestStore.loadLocal()
+    print("本机私有登记  \(AKPaths.localToolsFile.path)")
+    if list.isEmpty {
+        print("  （空）这里放「只在这台机器上成立」的条目：本地源码目录、没开源的小工具。")
+        print("  远端清单和这个仓库都不会碰它。格式见文件里的 _hint。")
+    } else {
+        print(pad("ID", 26) + pad("名称", 22) + "源码")
+        print(String(repeating: "─", count: 74))
+        for t in list {
+            print(pad(t.id, 26) + pad(t.name, 22) + (t.source?.path ?? "—"))
+        }
     }
 
 case "support":
