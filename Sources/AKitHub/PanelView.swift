@@ -23,42 +23,22 @@ struct PanelView: View {
 
     // MARK: 数据
 
-    private var plugins: [LoadedPlugin] {
-        var list = state.pluginManager.plugins.filter {
-            state.layout.display(for: $0.record.id) != .hidden
+    /// 面板里的卡片 = 实体列表，跟「工具」页同一份数据。
+    ///
+    /// 有插件的能展开它自己的界面，没有的只有一行状态 + 打开。
+    /// 不再分成「插件」和「其他工具」两组。
+    private var cards: [ToolEntity] {
+        var list = state.entities.filter {
+            $0.isInstalled || $0.plugin != nil || $0.legacy != nil
         }
+        list = list.filter { state.layout.display(for: $0.id) != .hidden }
         guard !query.isEmpty else { return list }
         let q = query.lowercased()
-        list = list.filter { $0.record.displayName.lowercased().contains(q) }
-        return list
-    }
-
-    /// 老协议 / 只是被扫描到、没有插件的工具
-    private var legacyVisible: [ToolEntry] {
-        let covered = Set(state.pluginManager.plugins.compactMap {
-            $0.record.appPath.flatMap { path in
-                state.entries.first { entry in
-                    entry.installed?.path.path.hasPrefix(path) == true
-                }?.id
-            }
-        })
-        var list = state.allEntries.filter {
-            ($0.isInstalled || $0.isRuntimeOnly)
-                && !state.layout.isHidden($0.id)
-                && !covered.contains($0.id)
-        }
-        if !query.isEmpty {
-            let q = query.lowercased()
-            list = list.filter { $0.name.lowercased().contains(q) }
-        }
-        return list.sorted { a, b in
-            if state.isConnected(a) != state.isConnected(b) { return state.isConnected(a) }
-            return a.name.localizedStandardCompare(b.name) == .orderedAscending
-        }
+        return list.filter { $0.name.lowercased().contains(q) }
     }
 
     private var totalCount: Int {
-        state.pluginManager.plugins.count + state.allEntries.filter { $0.isInstalled || $0.isRuntimeOnly }.count
+        state.entities.filter { $0.isInstalled || $0.plugin != nil || $0.legacy != nil }.count
     }
 
     // MARK: 布局
@@ -68,7 +48,7 @@ struct PanelView: View {
             header
             if totalCount > 4 { searchRow }
                 VStack(spacing: 6) {
-                    if plugins.isEmpty && legacyVisible.isEmpty {
+                    if cards.isEmpty {
                         Text("没有显示中的工具")
                             .font(AKFont.sans(12))
                             .foregroundColor(ak.inkSoft)
@@ -77,27 +57,11 @@ struct PanelView: View {
                             .padding(.horizontal, 14)
                     }
 
-                    ForEach(plugins) { plugin in
-                        PluginCard(plugin: plugin,
+                    ForEach(cards) { entity in
+                        EntityCard(state: state,
+                                   entity: entity,
                                    width: cardWidth,
-                                   expanded: expansionBinding(plugin.id))
-                    }
-
-                    if !legacyVisible.isEmpty {
-                        if !plugins.isEmpty {
-                            HStack {
-                                Text("其他工具 · 老协议")
-                                    .font(AKFont.sans(9.5))
-                                    .foregroundColor(ak.inkSoft.opacity(0.7))
-                                Spacer()
-                            }
-                            .padding(.top, 4)
-                            .padding(.horizontal, 4)
-                        }
-                        ForEach(legacyVisible) { entry in
-                            ToolCard(entry: entry, onShowMenu: onShowMenu)
-                                .environmentObject(state)
-                        }
+                                   expanded: expansionBinding(entity.id))
                     }
                 }
                 .padding(.horizontal, 10)
@@ -117,7 +81,7 @@ struct PanelView: View {
         .onChange(of: state.focusPluginId) { _ in primeExpansion() }
     }
 
-    /// 第一次打开：展开第一个插件，避免用户看到的还是"摘要"。
+    /// 第一次打开：展开第一个有界面的卡片，避免用户看到的还是"摘要"。
     /// 从菜单栏图标点进来的：只展开它，其余收起。
     private func primeExpansion() {
         if let focus = state.focusPluginId,
@@ -128,10 +92,10 @@ struct PanelView: View {
         guard !didPrimeExpansion else { return }
         didPrimeExpansion = true
         // 用户配了「默认展开」的先摊开
-        for p in state.pluginManager.plugins where state.layout.display(for: p.record.id) == .expanded {
-            expanded.insert(p.id)
+        for e in state.entities where state.layout.display(for: e.id) == .expanded && e.plugin != nil {
+            expanded.insert(e.id)
         }
-        if expanded.isEmpty, let first = state.pluginManager.plugins.first {
+        if expanded.isEmpty, let first = state.entities.first(where: { $0.plugin != nil }) {
             expanded.insert(first.id)
         }
     }

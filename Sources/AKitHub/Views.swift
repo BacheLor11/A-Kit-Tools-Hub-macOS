@@ -29,7 +29,6 @@ struct RootView: View {
     private var content: some View {
         switch state.page {
         case .tools: ToolsPage()
-        case .plugins: PluginsPage()
         case .updates: UpdatesPage()
         case .menuBar: MenuBarPage()
         case .thirdParty: ThirdPartyPage()
@@ -236,13 +235,22 @@ private struct ToolsPage: View {
     @EnvironmentObject var state: AppState
     @Environment(\.ak) private var ak
 
+    /// 一份实体列表：装了 app 的、只有插件的、只靠老协议在线的，都在这里。
+    /// 不再分「工具 / 插件」两页 —— 它们本来就是同一个东西。
+    private var visible: [ToolEntity] {
+        let list = state.entities
+        guard !state.query.isEmpty else { return list }
+        let q = state.query.lowercased()
+        return list.filter { $0.name.lowercased().contains(q) }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
                     PageHeader(kicker: "A-KIT · TOOLS",
                                title: "工具",
-                               lede: "自己写的 macOS 工具都在这里。装、更、删，一处管完。")
+                               lede: "自己写的 macOS 工具都在这里。装、更、删、看界面，一处管完。")
                     Spacer()
                     SearchBar().padding(.top, 18)
                 }
@@ -251,6 +259,7 @@ private struct ToolsPage: View {
                 HStack(spacing: 18) {
                     StatChip(label: "已安装", value: "\(state.installedCount)")
                     StatChip(label: "可更新", value: "\(state.updates.count)", accent: state.updates.count > 0)
+                    StatChip(label: "插件", value: "\(state.pluginManager.plugins.count)")
                     StatChip(label: "菜单栏在线", value: "\(state.connected.count)")
                     if !state.imported.isEmpty {
                         StatChip(label: "来自链接", value: "\(state.imported.count)")
@@ -262,20 +271,27 @@ private struct ToolsPage: View {
                         state.showImportSheet = true
                     }
                     .buttonStyle(AKPrimaryButtonStyle(filled: false))
-                    Button("重新扫描") { Task { await state.refreshAll() } }
-                        .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                    Button("重新扫描") {
+                        state.pluginManager.reload()
+                        Task { await state.refreshAll() }
+                    }
+                    .buttonStyle(AKPrimaryButtonStyle(filled: false))
                 }
                 .padding(.bottom, 8)
 
-                if state.filtered.isEmpty {
+                if visible.isEmpty {
                     EmptyState(text: state.query.isEmpty ? "还没有登记任何工具" : "没有匹配「\(state.query)」的工具",
                                hint: state.query.isEmpty ? "A-Kit 本身不带工具。点右上角「从链接安装」粘一个工具的 GitHub 地址；本机已有的源码工具写进 tools.local.json（akit local 看路径）" : "")
                         .padding(.top, 40)
                 } else {
                     VStack(spacing: 0) {
                         AKHairline()
-                        ForEach(state.filtered) { entry in
-                            ToolRowView(entry: entry)
+                        ForEach(visible) { entity in
+                            if let entry = entity.entry {
+                                ToolRowView(entry: entry, form: entity.form)
+                            } else {
+                                PluginOnlyRow(entity: entity)
+                            }
                             AKHairline()
                         }
                     }
@@ -286,9 +302,14 @@ private struct ToolsPage: View {
             .padding(.bottom, 40)
         }
         .sheet(isPresented: Binding(get: { state.selectedId != nil }, set: { if !$0 { state.selectedId = nil } })) {
-            if let id = state.selectedId, let entry = state.entry(id) {
-                ToolDetailSheet(entry: entry)
-                    .environmentObject(state)
+            if let id = state.selectedId, let entity = state.entity(id) {
+                if let entry = entity.entry {
+                    ToolDetailSheet(entry: entry)
+                        .environmentObject(state)
+                } else if let plugin = entity.plugin {
+                    PluginDetailSheet(plugin: plugin, entity: entity)
+                        .environmentObject(state)
+                }
             }
         }
     }
@@ -338,6 +359,8 @@ private struct ToolRowView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.ak) private var ak
     var entry: ToolEntry
+    /// 这个工具的运行形态（双形态 / 独立 app / 老协议）。nil 时只按安装信息显示。
+    var form: ToolEntity.Form? = nil
     @State private var hovered = false
 
     var body: some View {
@@ -361,9 +384,15 @@ private struct ToolRowView: View {
             .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 5) {
-                Text(entry.name)
-                    .font(AKFont.serif(19))
-                    .foregroundColor(hovered ? ak.accent : ak.ink)
+                HStack(spacing: 8) {
+                    Text(entry.name)
+                        .font(AKFont.serif(19))
+                        .foregroundColor(hovered ? ak.accent : ak.ink)
+                    if let form {
+                        AKTag(text: form.label,
+                              tint: form == .both ? ak.accent : ak.inkSoft.opacity(0.75))
+                    }
+                }
                 if !entry.tagline.isEmpty {
                     Text(entry.tagline)
                         .font(AKFont.sans(12.5))
