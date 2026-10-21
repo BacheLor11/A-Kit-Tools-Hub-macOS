@@ -292,8 +292,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pm.onPresentFull = { [weak self] pluginId in
             guard let self else { return }
             self.hidePanel()
-            self.state.selectedPluginId = pluginId
-            self.state.page = .plugins
+            // 插件和工具走同一个详情 sheet（selectedId 存的是实体 id）
+            self.state.selectedId = pluginId
             self.showWindow()
         }
 

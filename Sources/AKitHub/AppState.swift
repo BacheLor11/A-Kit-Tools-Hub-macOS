@@ -10,12 +10,11 @@ import AKitHostKit
 final class AppState: ObservableObject {
 
     enum Page: String, CaseIterable, Identifiable {
-        case tools, plugins, updates, menuBar, thirdParty, settings
+        case tools, updates, menuBar, thirdParty, settings
         var id: String { rawValue }
         var title: String {
             switch self {
             case .tools: return "工具"
-            case .plugins: return "插件"
             case .updates: return "更新"
             case .menuBar: return "菜单栏"
             case .thirdParty: return "第三方"
@@ -25,7 +24,6 @@ final class AppState: ObservableObject {
         var symbol: String {
             switch self {
             case .tools: return "square.grid.2x2"
-            case .plugins: return "puzzlepiece.extension"
             case .updates: return "arrow.triangle.2.circlepath"
             case .menuBar: return "menubar.rectangle"
             case .thirdParty: return "app.badge.checkmark"
