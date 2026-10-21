@@ -55,7 +55,7 @@ MyTool/
 ### 方案 A：复制单文件（推荐）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BacheLor11/A-Kit/main/SDK/AKitStatusKit.swift \
+curl -fsSL https://raw.githubusercontent.com/BacheLor11/A-Kit-Tools-Hub-macOS/main/SDK/AKitStatusKit.swift \
   -o Sources/MyTool/Vendor/AKitStatusKit.swift
 ```
 
@@ -67,7 +67,7 @@ curl -fsSL https://raw.githubusercontent.com/BacheLor11/A-Kit/main/SDK/AKitStatu
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.2.0")
+    .package(url: "https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS.git", from: "0.2.0")
 ],
 targets: [
     .executableTarget(

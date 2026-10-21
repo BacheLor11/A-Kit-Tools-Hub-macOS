@@ -1,6 +1,6 @@
 # A-Kit SDK
 
-把 macOS 菜单栏工具接进 [A-Kit](https://github.com/BacheLor11/A-Kit) 的单文件 SDK。
+把 macOS 菜单栏工具接进 [A-Kit](https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS) 的单文件 SDK。
 
 **这个 SDK 是给「另一个仓库」用的。** A-Kit 主仓库只放引擎，你的工具留在你自己的仓库里，
 把下面这个文件复制过去、加一个 `akit.json`、发一个 Release —— 别人就能在 A-Kit 里粘链接装上你的工具。

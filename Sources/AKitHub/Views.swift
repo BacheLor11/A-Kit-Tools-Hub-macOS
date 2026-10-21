@@ -680,7 +680,7 @@ private struct ThirdPartyPage: View {
 
                     step(1, "拿到 SDK", "单文件 AKitStatusKit.swift 直接拖进工程，或者加 SwiftPM 依赖（零第三方依赖，只 import Foundation）。")
                     CopyBlock(title: "SwiftPM", code: """
-                    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.3.0")
+                    .package(url: "https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS.git", from: "0.3.0")
                     """)
 
                     step(2, "启动时报到", "把菜单项描述给 Hub，Hub 一连上就会要求你把图标收起来。")
@@ -691,13 +691,13 @@ private struct ThirdPartyPage: View {
 
                     HStack(spacing: 10) {
                         Button("接入文档（API）") {
-                            if let url = URL(string: "https://github.com/BacheLor11/A-Kit/blob/main/docs/SDK.md") {
+                            if let url = URL(string: "https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS/blob/main/docs/SDK.md") {
                                 NSWorkspace.shared.open(url)
                             }
                         }
                         .buttonStyle(AKPrimaryButtonStyle(filled: false))
                         Button("工具仓库规范") {
-                            if let url = URL(string: "https://github.com/BacheLor11/A-Kit/blob/main/docs/TOOL-REPO.md") {
+                            if let url = URL(string: "https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS/blob/main/docs/TOOL-REPO.md") {
                                 NSWorkspace.shared.open(url)
                             }
                         }

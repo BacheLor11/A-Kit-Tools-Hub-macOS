@@ -11,7 +11,7 @@
 用法：
   python3 Scripts/gen_manifest.py \
       --version 0.2.0 \
-      --url https://github.com/BacheLor11/A-Kit/releases/download/v0.2.0/A-Kit-0.2.0.zip \
+      --url https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS/releases/download/v0.2.0/A-Kit-0.2.0.zip \
       --sha256 <hex> \
       --notes "本次更新…" \
       --out manifest.json
@@ -60,7 +60,7 @@ def main() -> int:
         "tagline": "自己写的小工具，自己收着。",
         "bundleId": read_bundle_id(),
         "category": "tool",
-        "repo": "BacheLor11/A-Kit",
+        "repo": "BacheLor11/A-Kit-Tools-Hub-macOS",
         "statusBar": {"supported": True, "defaultVisible": True},
         "channels": {
             "stable": {

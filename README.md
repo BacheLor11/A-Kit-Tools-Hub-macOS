@@ -15,6 +15,8 @@
 
 A-Kit 只做**引擎**。工具都在各自的仓库里，谁也不捆绑谁。
 
+> 仓库全名是 `A-Kit-Tools-Hub-macOS`，为了跟一堆 `A-Kit-*` 的项目区分开；**软件名就叫 A-Kit**，装的还是这个 app。
+
 ```
 A-Kit（本仓库）                     工具仓库（各自独立）
 ├── Hub.app     图形界面 / 菜单栏    ├── MyTool.app    自己的 app
@@ -125,7 +127,7 @@ A-Kit 的选择：
 **① 复制 SDK**（单文件，只 `import Foundation`，不进你的依赖树）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BacheLor11/A-Kit/main/SDK/AKitStatusKit.swift \
+curl -fsSL https://raw.githubusercontent.com/BacheLor11/A-Kit-Tools-Hub-macOS/main/SDK/AKitStatusKit.swift \
   -o Sources/MyTool/Vendor/AKitStatusKit.swift
 ```
 

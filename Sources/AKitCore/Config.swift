@@ -22,7 +22,7 @@ public struct AKSettings: Codable {
 
     public static var `default`: AKSettings {
         AKSettings(
-            manifestURL: "https://github.com/BacheLor11/A-Kit/releases/latest/download/manifest.json",
+            manifestURL: "https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS/releases/latest/download/manifest.json",
             installDirectory: "~/Applications",
             bundlePrefixes: [],
             scanDirectories: ["/Applications", "~/Applications"],
