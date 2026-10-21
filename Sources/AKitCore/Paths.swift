@@ -14,6 +14,9 @@ public enum AKPaths {
     public static var usageFile: URL { support.appendingPathComponent("usage.json") }
     /// 从 GitHub / 直链装进来的工具（带来源信息，用于检查更新）
     public static var importedFile: URL { support.appendingPathComponent("imported.json") }
+    /// 本机私有的工具登记（本地源码路径、没开源的小工具）。刻意不放进仓库，
+    /// 否则开源出去就把自己的目录结构也给发出去了。
+    public static var localToolsFile: URL { support.appendingPathComponent("tools.local.json") }
     public static var backups: URL { support.appendingPathComponent("Backups", isDirectory: true) }
     public static var downloads: URL { support.appendingPathComponent("Downloads", isDirectory: true) }
     public static var logs: URL { support.appendingPathComponent("Logs", isDirectory: true) }

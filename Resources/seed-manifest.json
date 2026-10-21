@@ -1,50 +1,13 @@
 {
   "schemaVersion": 1,
   "generatedAt": "2026-10-21",
-  "tools": [
-    {
-      "id": "gtvmic",
-      "name": "GTVRemoteMic",
-      "tagline": "把 iPhone 当 Google TV 的麦克风用",
-      "bundleId": "com.aibao.GTVRemoteMic",
-      "category": "tool",
-      "statusBar": { "supported": true, "defaultVisible": true },
-      "channels": {
-        "stable": { "version": "1.0.5", "build": 6, "minOS": "13.0" }
-      },
-      "source": {
-        "type": "swiftpm",
-        "path": "/Volumes/askb-d/Agent-Projects/googletv-remote-mac-mic",
-        "appPath": "GTVRemoteMic.app"
-      }
-    },
-    {
-      "id": "passerby",
-      "name": "PasserbyGuard",
-      "tagline": "摄像头盯着门口，有人路过就提醒",
-      "bundleId": "com.passerbyguard.app",
-      "category": "tool",
-      "statusBar": { "supported": true, "defaultVisible": true },
-      "channels": {
-        "stable": { "version": "1.0.0", "minOS": "13.0" }
-      },
-      "source": {
-        "type": "swiftpm",
-        "path": "/Users/askb/Documents/Agent-Projects/Passer-by-Guard",
-        "appPath": "build/PasserbyGuard.app"
-      }
-    },
-    {
-      "id": "netpulse",
-      "name": "NetPulse",
-      "tagline": "菜单栏里的实时网速监控",
-      "bundleId": "com.aibao.NetPulse",
-      "category": "tool",
-      "repo": "BacheLor11/NetPulse",
-      "statusBar": { "supported": true, "defaultVisible": true },
-      "channels": {
-        "stable": { "version": "1.2.0", "build": 12, "minOS": "13.0" }
-      }
-    }
+  "tools": [],
+  "_note": [
+    "这个文件是刻意留空的。",
+    "A-Kit 只做「引擎」：装、更、删、菜单栏代管，本身不带任何具体工具，",
+    "也不记录任何人的本机路径。工具都在各自的仓库里，",
+    "装机方式是把它仓库的 GitHub 链接粘进 A-Kit。",
+    "仅当你 fork 后想自带一份清单（比如团队内部工具集）时才需要往里加。",
+    "本机私有的登记（本地源码路径等）写到 tools.local.json，别写在这里。"
   ]
 }

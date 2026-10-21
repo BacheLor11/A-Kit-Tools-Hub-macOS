@@ -18,7 +18,7 @@ public struct AKToolManifest: Codable {
     public var minOS: String?
     public var article: String?
     public var icon: String?
-    /// 挑选产物的通配（如 "NetPulse-*.zip"）或子串
+    /// 挑选产物的通配（如 "MyTool-*.zip"）或子串
     public var asset: String?
     public var sha256: String?
     public var statusBar: StatusBarSpec?

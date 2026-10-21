@@ -24,8 +24,8 @@ public struct AKSettings: Codable {
         AKSettings(
             manifestURL: "https://github.com/BacheLor11/A-Kit/releases/latest/download/manifest.json",
             installDirectory: "~/Applications",
-            bundlePrefixes: ["com.aibao.", "com.askb.", "app.askb.", "com.passerbyguard."],
-            scanDirectories: ["/Applications", "~/Applications", "/Volumes/askb-d/Applications"],
+            bundlePrefixes: [],
+            scanDirectories: ["/Applications", "~/Applications"],
             hotkey: "cmd+shift+a",
             launchAtLogin: false,
             autoCheckUpdates: true,

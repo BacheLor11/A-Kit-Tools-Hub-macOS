@@ -96,25 +96,36 @@ private struct Sidebar: View {
 
     private var version: String {
         let v = Self.appVersion
-        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        let b = Self.appBuild
         return "版本 \(v) (\(b))"
     }
 }
 
 extension Sidebar {
+    private static var repoPlist: [String: Any]? {
+        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Resources/Info.plist")
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+            return nil
+        }
+        return plist
+    }
+
     /// 裸二进制跑快照时没有 Info.plist，回落到仓库里的 Info.plist，避免版本号显示成死值
     static var appVersion: String {
         if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
             return v
         }
-        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("Resources/Info.plist")
-        if let data = try? Data(contentsOf: url),
-           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-           let v = plist["CFBundleShortVersionString"] as? String {
-            return v
+        return repoPlist?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    /// build 号同理：裸二进制里读不到就回落，不然永远显示 (1)
+    static var appBuild: String {
+        if let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
+            return b
         }
-        return "dev"
+        return repoPlist?["CFBundleVersion"] as? String ?? "0"
     }
 }
 
@@ -257,7 +268,7 @@ private struct ToolsPage: View {
 
                 if state.filtered.isEmpty {
                     EmptyState(text: state.query.isEmpty ? "还没有登记任何工具" : "没有匹配「\(state.query)」的工具",
-                               hint: state.query.isEmpty ? "点右上角「从链接安装」填一个 GitHub 地址，或把工具写进 manifest" : "")
+                               hint: state.query.isEmpty ? "A-Kit 本身不带工具。点右上角「从链接安装」粘一个工具的 GitHub 地址；本机已有的源码工具写进 tools.local.json（akit local 看路径）" : "")
                         .padding(.top, 40)
                 } else {
                     VStack(spacing: 0) {
@@ -650,7 +661,7 @@ private struct ThirdPartyPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 PageHeader(kicker: "A-KIT · OTHERS",
                            title: "第三方",
-                           lede: "自己的工具三步接进来；别人的 app 没有接口，只能引导，不承诺。")
+                           lede: "工具住在各自的仓库，A-Kit 只认链接；别人没接口的 app 只能引导，不承诺。")
                     .padding(.bottom, 22)
 
                 // 接入引导
@@ -669,7 +680,7 @@ private struct ThirdPartyPage: View {
 
                     step(1, "拿到 SDK", "单文件 AKitStatusKit.swift 直接拖进工程，或者加 SwiftPM 依赖（零第三方依赖，只 import Foundation）。")
                     CopyBlock(title: "SwiftPM", code: """
-                    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.2.0")
+                    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.3.0")
                     """)
 
                     step(2, "启动时报到", "把菜单项描述给 Hub，Hub 一连上就会要求你把图标收起来。")
@@ -679,8 +690,14 @@ private struct ThirdPartyPage: View {
                     CopyBlock(title: "akit.json", code: Self.manifestSnippet)
 
                     HStack(spacing: 10) {
-                        Button("完整接入文档") {
+                        Button("接入文档（API）") {
                             if let url = URL(string: "https://github.com/BacheLor11/A-Kit/blob/main/docs/SDK.md") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                        Button("工具仓库规范") {
+                            if let url = URL(string: "https://github.com/BacheLor11/A-Kit/blob/main/docs/TOOL-REPO.md") {
                                 NSWorkspace.shared.open(url)
                             }
                         }

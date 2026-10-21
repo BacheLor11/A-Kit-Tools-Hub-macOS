@@ -73,6 +73,8 @@ final class AppState: ObservableObject {
     @Published var lastBuild: [String: String] = [:]
 
     private var manifest: Manifest?
+    /// 本机私有登记（tools.local.json），不进仓库、不在任何远端清单里
+    private var localTools: [ToolSpec] = []
     private let server = HubServer()
     private var watcher: DevWatcher?
 
@@ -84,6 +86,8 @@ final class AppState: ObservableObject {
         layout = AKLayout.load()
         usage = AKUsage.load()
         imported = ImportedStore.load()
+        localTools = ManifestStore.loadLocal()
+        ManifestStore.ensureLocalSkeleton()
 
         server.onClientsChanged = { [weak self] in
             DispatchQueue.main.async { self?.syncConnected() }
@@ -104,11 +108,23 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: 清单合并（内置 + 从 GitHub 装的）
+    // MARK: 清单合并（远端 + 本机私有登记 + 从 GitHub 装的）
+    //
+    // 三条来源分开存、合并着用，谁都不污染谁：
+    //   · 远端清单  → A-Kit 自己的版本信息（自更新），fork 者可换
+    //   · tools.local.json → 只在这台机器上成立的东西（本地源码、私货）
+    //   · imported.json   → 粘网址装进来的，带来源，能继续查更新
+    // 三者都当成「清单的一部分」，后面安装/更新/体检走完全一样的流程。
 
-    /// 把导入的工具当成清单的一部分，这样它们和内置工具走完全一样的安装/更新/体检流程。
     var effectiveManifest: Manifest? {
         var tools = manifest?.tools ?? []
+
+        // 本机私有登记：同 id 覆盖，新的追加
+        for local in localTools {
+            if let i = tools.firstIndex(where: { $0.id == local.id }) { tools[i] = local }
+            else { tools.append(local) }
+        }
+
         let existing = Set(tools.map(\.id))
         let extra = imported.filter { !existing.contains($0.id) }.map { $0.spec() }
         if tools.isEmpty && extra.isEmpty { return nil }
@@ -162,11 +178,18 @@ final class AppState: ObservableObject {
     // MARK: 载入
 
     func loadManifest() async {
+        localTools = ManifestStore.loadLocal()
+
+        func label(_ base: String, _ count: Int) -> String {
+            localTools.isEmpty ? "\(base) · \(count) 个工具"
+                               : "\(base) · \(count) 个工具 + 本机 \(localTools.count)"
+        }
+
         if !settings.manifestURL.isEmpty {
             do {
                 let m = try await ManifestStore.loadRemote(settings.manifestURL)
                 manifest = m
-                manifestLabel = "远程清单 · \(m.tools.count) 个工具"
+                manifestLabel = label("远程清单", m.tools.count)
                 return
             } catch {
                 AKLogInfo("manifest", "远程失败：\(error.localizedDescription)")
@@ -174,21 +197,22 @@ final class AppState: ObservableObject {
         }
         if let cached = ManifestStore.loadCache() {
             manifest = cached
-            manifestLabel = "本地缓存 · \(cached.tools.count) 个工具"
+            manifestLabel = label("本地缓存", cached.tools.count)
             return
         }
         if let bundled = ManifestStore.loadBundled() {
             manifest = bundled
-            manifestLabel = "内置清单 · \(bundled.tools.count) 个工具"
+            manifestLabel = label("内置清单", bundled.tools.count)
             return
         }
         manifest = nil
-        manifestLabel = "没有可用清单"
+        manifestLabel = localTools.isEmpty ? "没有可用清单" : "只有本机登记"
     }
 
     func rescan() async {
         let settings = self.settings
         imported = ImportedStore.load()
+        localTools = ManifestStore.loadLocal()
         let m = effectiveManifest
         var known = Set((m?.tools ?? []).map(\.bundleId))
         for t in imported { known.insert(t.bundleId) }

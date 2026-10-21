@@ -13,12 +13,32 @@ echo "▸ 编译 (release)…"
 swift build -c release --disable-sandbox
 
 echo "▸ 准备图标…"
-if [ ! -f "$BUILD_DIR/AppIcon.icns" ]; then
-    "$PY" Scripts/make_app_icon.py Resources/MarkA.png "$BUILD_DIR" >/dev/null
+# 图标已经生成好并提交在 Resources/ 里，正常人构建不需要 Python。
+# 只有想换图标时才跑那两个脚本（需要 Pillow）。
+APPICON="$BUILD_DIR/AppIcon.icns"
+if [ ! -f "$APPICON" ]; then
+    if [ -f Resources/AppIcon.icns ]; then
+        cp Resources/AppIcon.icns "$APPICON"
+    elif "$PY" -c "import PIL" 2>/dev/null; then
+        "$PY" Scripts/make_app_icon.py Resources/MarkA.png "$BUILD_DIR" >/dev/null
+    else
+        echo "  ! 没有 AppIcon.icns，且当前 Python 缺 Pillow，无法生成 app 图标"
+        echo "    修法：pip install pillow，或直接把现成的 AppIcon.icns 放到 Resources/"
+    fi
 fi
-MB_SRC="Resources/MenuBarIconSource.png"
-[ -f "$MB_SRC" ] || MB_SRC="Resources/MarkA.png"
-"$PY" Scripts/make_menubar_icon.py "$MB_SRC" "$BUILD_DIR" >/dev/null
+
+MENUBAR="$BUILD_DIR/MenuBarIcon.png"
+if [ ! -f "$MENUBAR" ]; then
+    if [ -f Resources/MenuBarIcon.png ]; then
+        cp Resources/MenuBarIcon.png "$MENUBAR"
+    elif "$PY" -c "import PIL" 2>/dev/null; then
+        MB_SRC="Resources/MenuBarIconSource.png"
+        [ -f "$MB_SRC" ] || MB_SRC="Resources/MarkA.png"
+        "$PY" Scripts/make_menubar_icon.py "$MB_SRC" "$BUILD_DIR" >/dev/null
+    else
+        echo "  ! 没有 MenuBarIcon.png，且当前 Python 缺 Pillow；菜单栏会没有图标"
+    fi
+fi
 
 echo "▸ 组装 ${APP} …"
 rm -rf "$APP"
