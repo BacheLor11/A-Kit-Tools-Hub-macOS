@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Combine
 import AKitCore
 import AKitStatusKit
 
@@ -8,11 +9,12 @@ import AKitStatusKit
 final class AppState: ObservableObject {
 
     enum Page: String, CaseIterable, Identifiable {
-        case tools, updates, menuBar, thirdParty, settings
+        case tools, plugins, updates, menuBar, thirdParty, settings
         var id: String { rawValue }
         var title: String {
             switch self {
             case .tools: return "工具"
+            case .plugins: return "插件"
             case .updates: return "更新"
             case .menuBar: return "菜单栏"
             case .thirdParty: return "第三方"
@@ -22,9 +24,10 @@ final class AppState: ObservableObject {
         var symbol: String {
             switch self {
             case .tools: return "square.grid.2x2"
+            case .plugins: return "puzzlepiece.extension"
             case .updates: return "arrow.triangle.2.circlepath"
             case .menuBar: return "menubar.rectangle"
-            case .thirdParty: return "puzzlepiece.extension"
+            case .thirdParty: return "app.badge.checkmark"
             case .settings: return "slider.horizontal.3"
             }
         }
@@ -60,6 +63,12 @@ final class AppState: ObservableObject {
     @Published var manifestLabel: String = "尚未加载"
     @Published var lastRefresh: Date?
     @Published var selectedId: String?
+    /// 控制台里正在看哪个插件的完整界面
+    @Published var selectedPluginId: String?
+    /// 点了菜单栏上某个插件的图标 —— 面板要展开它
+    @Published var focusPluginId: String?
+    /// 落点 / 排布变了，需要重建菜单栏代持
+    var onLayoutChanged: (() -> Void)?
     @Published var listening = false
 
     // GitHub 安装
@@ -79,6 +88,9 @@ final class AppState: ObservableObject {
     private var localTools: [ToolSpec] = []
     private let server = HubServer()
     private var watcher: DevWatcher?
+    /// 插件宿主：扫描 Plugins/、dlopen、崩溃哨兵
+    let pluginManager = PluginManager()
+    private var cancellables = Set<AnyCancellable>()
 
     // MARK: 初始化
 
@@ -105,6 +117,11 @@ final class AppState: ObservableObject {
         server.start()
         listening = server.isListening
         AKLogInfo("app", "A-Kit 启动，socket \(AKPaths.socket.path)")
+
+        // 插件状态变了要让整个 UI 跟着刷（嵌套 ObservableObject 不会自动冒泡）
+        pluginManager.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         guard bootstrap else { return }
         Task {
@@ -785,5 +802,26 @@ final class AppState: ObservableObject {
             }
         }
         return build(tool.menu)
+    }
+
+    // MARK: 插件落点
+
+    func setPluginSlot(_ plugin: LoadedPlugin, _ slot: AKLayout.Slot) {
+        layout.setSlot(slot, for: plugin.record.id)
+        layout.save()
+        objectWillChange.send()
+        onLayoutChanged?()
+    }
+
+    func setPluginDisplay(_ plugin: LoadedPlugin, _ display: AKLayout.Display) {
+        layout.setDisplay(display, for: plugin.record.id)
+        layout.save()
+        objectWillChange.send()
+    }
+
+    func setPanelStyle(_ style: AKLayout.PanelStyle) {
+        layout.panelStyle = style.rawValue
+        layout.save()
+        objectWillChange.send()
     }
 }

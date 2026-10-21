@@ -20,9 +20,15 @@ public enum AKPaths {
     public static var backups: URL { support.appendingPathComponent("Backups", isDirectory: true) }
     public static var downloads: URL { support.appendingPathComponent("Downloads", isDirectory: true) }
     public static var logs: URL { support.appendingPathComponent("Logs", isDirectory: true) }
+    /// 插件目录。里面放 `.akitplugin`，通常是软链指向 `xxx.app/Contents/PlugIns/…`
+    public static var plugins: URL { support.appendingPathComponent("Plugins", isDirectory: true) }
+    /// 插件状态（启用/禁用、崩溃次数）
+    public static var pluginStateFile: URL { support.appendingPathComponent("plugin-state.json") }
+    /// 崩溃哨兵：上次是否非正常退出、崩在哪个插件
+    public static var crashSentinel: URL { support.appendingPathComponent("crash-sentinel.json") }
 
     public static func ensure() {
-        for dir in [support, backups, downloads, logs] {
+        for dir in [support, backups, downloads, logs, plugins] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

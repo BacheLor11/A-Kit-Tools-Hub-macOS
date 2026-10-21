@@ -29,6 +29,7 @@ struct RootView: View {
     private var content: some View {
         switch state.page {
         case .tools: ToolsPage()
+        case .plugins: PluginsPage()
         case .updates: UpdatesPage()
         case .menuBar: MenuBarPage()
         case .thirdParty: ThirdPartyPage()
@@ -570,6 +571,11 @@ private struct MenuBarPage: View {
                 }
                 .padding(.bottom, 18)
 
+                if !state.pluginManager.plugins.isEmpty {
+                    pluginSection
+                        .padding(.bottom, 20)
+                }
+
                 VStack(spacing: 0) {
                     AKHairline()
                     ForEach(state.entries.filter { $0.isInstalled }) { entry in
@@ -654,6 +660,120 @@ private struct MenuBarPage: View {
             .padding(.top, 30)
             .padding(.bottom, 40)
         }
+    }
+
+    // MARK: 插件落点
+
+    @ViewBuilder
+    private var pluginSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("插件")
+                    .font(AKFont.sans(12.5))
+                    .foregroundColor(ak.inkSoft)
+                Text("\(state.pluginManager.plugins.count)")
+                    .font(AKFont.sans(10))
+                    .foregroundColor(ak.inkSoft.opacity(0.7))
+                Spacer()
+                Text("面板形态")
+                    .font(AKFont.sans(11))
+                    .foregroundColor(ak.inkSoft.opacity(0.8))
+                Picker("", selection: Binding(
+                    get: { state.layout.resolvedPanelStyle },
+                    set: { state.setPanelStyle($0) }
+                )) {
+                    ForEach(AKLayout.PanelStyle.allCases, id: \.self) { s in
+                        Text(s.title).tag(s)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 156)
+            }
+
+            Text(state.layout.resolvedPanelStyle.hint)
+                .font(AKFont.sans(11.5))
+                .foregroundColor(ak.inkSoft.opacity(0.8))
+
+            Text("「A-Kit 代持」由 A-Kit 创建图标，顺序可控；「自己持有」是工具自己建的，A-Kit 管不了顺序。")
+                .font(AKFont.sans(11.5))
+                .foregroundColor(ak.inkSoft.opacity(0.8))
+
+            VStack(spacing: 0) {
+                AKHairline()
+                ForEach(state.pluginManager.plugins) { p in
+                    pluginRow(p)
+                    AKHairline()
+                }
+            }
+        }
+    }
+
+    private func pluginRow(_ p: LoadedPlugin) -> some View {
+        HStack(spacing: 14) {
+            if let icon = p.icon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 18, height: 18)
+            } else {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(ak.accent.opacity(0.15))
+                    .frame(width: 18, height: 18)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(p.record.displayName)
+                    .font(AKFont.sans(13, weight: .medium))
+                    .foregroundColor(ak.ink)
+                Text("v\(p.record.version) · \(p.record.id)")
+                    .font(AKFont.sans(10.5))
+                    .foregroundColor(ak.inkSoft.opacity(0.75))
+            }
+
+            Spacer()
+
+            Menu {
+                ForEach(AKLayout.Slot.allCases, id: \.self) { s in
+                    Button {
+                        state.setPluginSlot(p, s)
+                    } label: {
+                        Label(s.title, systemImage: s.symbol)
+                    }
+                }
+            } label: {
+                chip(state.layout.slot(for: p.record.id).title)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+
+            Menu {
+                ForEach(AKLayout.Display.allCases, id: \.self) { d in
+                    Button(d.title) { state.setPluginDisplay(p, d) }
+                }
+            } label: {
+                chip(state.layout.display(for: p.record.id).title)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .padding(.vertical, 11)
+    }
+
+    private func chip(_ text: String) -> some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .font(AKFont.sans(11))
+                .foregroundColor(ak.inkSoft)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 7, weight: .medium))
+                .foregroundColor(ak.inkSoft.opacity(0.7))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(ak.bg))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(ak.border, lineWidth: 0.5))
     }
 }
 

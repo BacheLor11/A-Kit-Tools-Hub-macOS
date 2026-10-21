@@ -134,8 +134,104 @@ public struct AKLayout: Codable {
     public var hidden: [String]
     public var clickBehavior: String      // panel / menu
 
+    // MARK: 插件落点与排布
+    //
+    // 三个维度互相独立：
+    // - slot：这个插件在**系统菜单栏**里怎么出现（bar / hubbar / board / hidden）
+    // - display：这个插件在**面板里**怎么出现（expanded / collapsed / hidden）
+    // - panelStyle：面板整体形态（cards / accordion / compact）
+    //
+    // 用 optional 是为了兼容老 layout.json，缺字段时走默认值。
+
+    /// pluginId → bar（自己持有图标）/ hubbar（Hub 代持）/ board（只进面板）/ hidden
+    public var slot: [String: String]?
+    /// pluginId → expanded / collapsed / hidden
+    public var display: [String: String]?
+    /// 面板整体形态
+    public var panelStyle: String?
+
     public static var `default`: AKLayout {
-        AKLayout(groups: [Group(id: "main", title: "工具", collapsed: false)], hidden: [], clickBehavior: "panel")
+        AKLayout(groups: [Group(id: "main", title: "工具", collapsed: false)],
+                 hidden: [], clickBehavior: "panel",
+                 slot: nil, display: nil, panelStyle: "cards")
+    }
+
+    public enum Slot: String, CaseIterable {
+        case bar, hubbar, board, hidden
+
+        public var title: String {
+            switch self {
+            case .bar: return "菜单栏 · 自己持有"
+            case .hubbar: return "菜单栏 · A-Kit 代持"
+            case .board: return "只进 A-Kit 面板"
+            case .hidden: return "不显示"
+            }
+        }
+
+        public var symbol: String {
+            switch self {
+            case .bar: return "menubar.rectangle"
+            case .hubbar: return "square.grid.2x2"
+            case .board: return "rectangle.on.rectangle"
+            case .hidden: return "eye.slash"
+            }
+        }
+    }
+
+    public enum Display: String, CaseIterable {
+        case expanded, collapsed, hidden
+
+        public var title: String {
+            switch self {
+            case .expanded: return "默认展开"
+            case .collapsed: return "折叠成一行"
+            case .hidden: return "面板里不显示"
+            }
+        }
+    }
+
+    public enum PanelStyle: String, CaseIterable {
+        case cards, accordion, compact
+
+        public var title: String {
+            switch self {
+            case .cards: return "卡片流"
+            case .accordion: return "手风琴（只开一个）"
+            case .compact: return "紧凑列表"
+            }
+        }
+
+        public var hint: String {
+            switch self {
+            case .cards: return "每个工具各自展开、各自折叠，适合工具少"
+            case .accordion: return "同一时刻只展开一个，适合工具多"
+            case .compact: return "全部收成一行，点了才展开，最省空间"
+            }
+        }
+    }
+
+    public func slot(for pluginId: String) -> Slot {
+        Slot(rawValue: slot?[pluginId] ?? "") ?? .hubbar
+    }
+
+    public mutating func setSlot(_ value: Slot, for pluginId: String) {
+        var m = slot ?? [:]
+        m[pluginId] = value.rawValue
+        slot = m
+    }
+
+    public func display(for pluginId: String) -> Display {
+        Display(rawValue: display?[pluginId] ?? "") ?? .collapsed
+    }
+
+    public mutating func setDisplay(_ value: Display, for pluginId: String) {
+        var m = display ?? [:]
+        m[pluginId] = value.rawValue
+        display = m
+    }
+
+    public var resolvedPanelStyle: PanelStyle {
+        PanelStyle(rawValue: panelStyle ?? "") ?? .cards
     }
 
     public static func load() -> AKLayout {

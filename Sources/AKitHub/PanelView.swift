@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AKitCore
 import AKitStatusKit
+import AKitPluginKit
 
 /// 状态栏点开的面板（不是长菜单，是卡片式面板）
 struct PanelView: View {
@@ -14,33 +15,60 @@ struct PanelView: View {
     var onSettings: () -> Void
 
     @State private var query = ""
+    /// 哪些插件卡片是展开的（点一下就切，暂时只在本次会话里记）
+    @State private var expanded: Set<String> = []
+    @State private var didPrimeExpansion = false
 
-    private var visible: [ToolEntry] {
-        // isRuntimeOnly：SDK 注册了但清单/扫描没收录 —— 也要给一张卡，
-        // 否则它的菜单栏图标已经让给 Hub，用户就彻底找不到入口了
+    private let cardWidth: CGFloat = 316
+
+    // MARK: 数据
+
+    private var plugins: [LoadedPlugin] {
+        var list = state.pluginManager.plugins.filter {
+            state.layout.display(for: $0.record.id) != .hidden
+        }
+        guard !query.isEmpty else { return list }
+        let q = query.lowercased()
+        list = list.filter { $0.record.displayName.lowercased().contains(q) }
+        return list
+    }
+
+    /// 老协议 / 只是被扫描到、没有插件的工具
+    private var legacyVisible: [ToolEntry] {
+        let covered = Set(state.pluginManager.plugins.compactMap {
+            $0.record.appPath.flatMap { path in
+                state.entries.first { entry in
+                    entry.installed?.path.path.hasPrefix(path) == true
+                }?.id
+            }
+        })
         var list = state.allEntries.filter {
-            ($0.isInstalled || $0.isRuntimeOnly) && !state.layout.isHidden($0.id)
+            ($0.isInstalled || $0.isRuntimeOnly)
+                && !state.layout.isHidden($0.id)
+                && !covered.contains($0.id)
         }
         if !query.isEmpty {
             let q = query.lowercased()
             list = list.filter { $0.name.lowercased().contains(q) }
         }
-        // 接入的排前面
         return list.sorted { a, b in
             if state.isConnected(a) != state.isConnected(b) { return state.isConnected(a) }
             return a.name.localizedStandardCompare(b.name) == .orderedAscending
         }
     }
 
+    private var totalCount: Int {
+        state.pluginManager.plugins.count + state.allEntries.filter { $0.isInstalled || $0.isRuntimeOnly }.count
+    }
+
+    // MARK: 布局
+
     var body: some View {
         VStack(spacing: 0) {
             header
-            if state.allEntries.filter({ $0.isInstalled || $0.isRuntimeOnly }).count > 4 {
-                searchRow
-            }
-            ScrollView {
+            if totalCount > 4 { searchRow }
                 VStack(spacing: 6) {
-                    if visible.isEmpty {
+                    if plugins.isEmpty && legacyVisible.isEmpty {
                         Text("没有显示中的工具")
                             .font(AKFont.sans(12))
                             .foregroundColor(ak.inkSoft)
@@ -48,15 +76,33 @@ struct PanelView: View {
                             .padding(.vertical, 14)
                             .padding(.horizontal, 14)
                     }
-                    ForEach(visible) { entry in
-                        ToolCard(entry: entry, onShowMenu: onShowMenu)
-                            .environmentObject(state)
+
+                    ForEach(plugins) { plugin in
+                        PluginCard(plugin: plugin,
+                                   width: cardWidth,
+                                   expanded: expansionBinding(plugin.id))
+                    }
+
+                    if !legacyVisible.isEmpty {
+                        if !plugins.isEmpty {
+                            HStack {
+                                Text("其他工具 · 老协议")
+                                    .font(AKFont.sans(9.5))
+                                    .foregroundColor(ak.inkSoft.opacity(0.7))
+                                Spacer()
+                            }
+                            .padding(.top, 4)
+                            .padding(.horizontal, 4)
+                        }
+                        ForEach(legacyVisible) { entry in
+                            ToolCard(entry: entry, onShowMenu: onShowMenu)
+                                .environmentObject(state)
+                        }
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 8)
-            }
-            .frame(height: min(CGFloat(max(visible.count, 1)) * 56 + 12, 372))
+            .frame(maxHeight: 500, alignment: .top)
 
             footer
         }
@@ -67,14 +113,55 @@ struct PanelView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(ak.border, lineWidth: 0.5)
         )
+        .onAppear(perform: primeExpansion)
+        .onChange(of: state.focusPluginId) { _ in primeExpansion() }
     }
+
+    /// 第一次打开：展开第一个插件，避免用户看到的还是"摘要"。
+    /// 从菜单栏图标点进来的：只展开它，其余收起。
+    private func primeExpansion() {
+        if let focus = state.focusPluginId,
+           state.pluginManager.plugin(id: focus) != nil {
+            expanded = [focus]
+            return
+        }
+        guard !didPrimeExpansion else { return }
+        didPrimeExpansion = true
+        // 用户配了「默认展开」的先摊开
+        for p in state.pluginManager.plugins where state.layout.display(for: p.record.id) == .expanded {
+            expanded.insert(p.id)
+        }
+        if expanded.isEmpty, let first = state.pluginManager.plugins.first {
+            expanded.insert(first.id)
+        }
+    }
+
+    private func expansionBinding(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { expanded.contains(id) },
+            set: { on in
+                if on {
+                    // 手风琴形态：同一时刻只展开一个
+                    if state.layout.resolvedPanelStyle == .accordion {
+                        expanded = [id]
+                    } else {
+                        expanded.insert(id)
+                    }
+                } else {
+                    expanded.remove(id)
+                }
+            }
+        )
+    }
+
+    // MARK: 组件
 
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
             Text("A-Kit")
                 .font(.custom("Zapfino", size: 12))
                 .foregroundColor(ak.ink)
-            Text("\(state.connected.count) 在线")
+            Text("\(state.pluginManager.plugins.count) 插件 · \(state.connected.count) 在线")
                 .font(AKFont.sans(10))
                 .foregroundColor(ak.inkSoft)
             Spacer()
@@ -125,7 +212,7 @@ struct PanelView: View {
                     .font(AKFont.sans(11))
                     .foregroundColor(ak.inkSoft)
                 Spacer()
-                Button("退出") { onQuit() }
+                Button("退出 A-Kit") { onQuit() }
                     .buttonStyle(.plain)
                     .font(AKFont.sans(11))
                     .foregroundColor(ak.inkSoft)
@@ -135,6 +222,8 @@ struct PanelView: View {
         }
     }
 }
+
+// MARK: - 老协议工具的卡片
 
 private struct ToolCard: View {
     @EnvironmentObject var state: AppState
@@ -162,25 +251,15 @@ private struct ToolCard: View {
         return info?.status ?? (info == nil ? "未接入" : "已接入")
     }
 
-    /// 卡片上平铺的常用项：取工具菜单里前 3 个可直接点击的项
-    private var quickItems: [AKMenuItem] {
-        guard let info else { return [] }
-        return Array(info.menu.filter {
-            ($0.kind == .toggle || $0.kind == .item) && $0.enabled && ($0.children == nil || $0.children!.isEmpty)
-        }.prefix(2))
-    }
-
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.name)
-                    .font(AKFont.serif(13.5))
+                    .font(AKFont.serif(13))
                     .foregroundColor(hovered ? ak.accent : ak.ink)
                     .lineLimit(1)
                 HStack(spacing: 4) {
-                    Circle()
-                        .fill(dotColor)
-                        .frame(width: 4, height: 4)
+                    Circle().fill(dotColor).frame(width: 4, height: 4)
                     Text(subtitle)
                         .font(AKFont.sans(10))
                         .foregroundColor(ak.inkSoft)
@@ -188,23 +267,6 @@ private struct ToolCard: View {
                 }
             }
             Spacer(minLength: 6)
-
-            ForEach(quickItems) { item in
-                Button {
-                    state.invoke(toolId: bundleId, itemId: item.id)
-                } label: {
-                    Text(item.title)
-                        .font(AKFont.sans(10.5, weight: .medium))
-                        .foregroundColor(item.checked == true ? ak.bg : ak.accent)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(item.checked == true ? ak.accent : ak.accent.opacity(0.08))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
 
             if unregistered {
                 Button {
@@ -233,6 +295,7 @@ private struct ToolCard: View {
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
+            .disabled(info == nil)
 
             Button {
                 state.open(entry)
