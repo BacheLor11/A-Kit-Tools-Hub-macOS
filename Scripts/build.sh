@@ -45,13 +45,13 @@ fi
 if [ "${1:-}" = "--install" ] || [ "${2:-}" = "--install" ]; then
     DEST="$HOME/Applications"
     mkdir -p "$DEST"
-    echo "▸ 安装到 $DEST…"
+    echo "▸ 安装到 ${DEST}…"
     osascript -e 'tell application "A-Kit" to quit' 2>/dev/null || true
     sleep 0.5
     rm -rf "$DEST/$APP_NAME.app"
     /usr/bin/ditto "$APP" "$DEST/$APP_NAME.app"
     /usr/bin/xattr -dr com.apple.quarantine "$DEST/$APP_NAME.app" 2>/dev/null || true
-    echo "✓ 完成：$DEST/$APP_NAME.app"
+    echo "✓ 完成：${DEST}/${APP_NAME}.app"
 else
-    echo "✓ 完成：$APP"
+    echo "✓ 完成：${APP}"
 fi

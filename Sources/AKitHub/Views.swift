@@ -95,9 +95,26 @@ private struct Sidebar: View {
     }
 
     private var version: String {
-        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        let v = Self.appVersion
         let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
         return "版本 \(v) (\(b))"
+    }
+}
+
+extension Sidebar {
+    /// 裸二进制跑快照时没有 Info.plist，回落到仓库里的 Info.plist，避免版本号显示成死值
+    static var appVersion: String {
+        if let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            return v
+        }
+        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Resources/Info.plist")
+        if let data = try? Data(contentsOf: url),
+           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+           let v = plist["CFBundleShortVersionString"] as? String {
+            return v
+        }
+        return "dev"
     }
 }
 
@@ -821,8 +838,8 @@ private struct CopyBlock: View {
     /// 页面里只露前 14 行，复制的是完整内容
     private var display: String {
         let lines = code.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count > 14 else { return code }
-        return lines.prefix(14).joined(separator: "\n") + "\n…（复制得到完整内容）"
+        guard lines.count > 10 else { return code }
+        return lines.prefix(10).joined(separator: "\n") + "\n…（复制得到完整内容）"
     }
 }
 

@@ -247,7 +247,7 @@ struct ImportSheet: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if let t = state.imported.last {
+            if !state.imported.isEmpty {
                 Text("已装 \(state.imported.count) 个来自链接的工具")
                     .font(AKFont.sans(11))
                     .foregroundColor(ak.inkSoft.opacity(0.75))
