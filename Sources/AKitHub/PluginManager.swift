@@ -144,8 +144,12 @@ final class PluginManager: NSObject, ObservableObject {
     // MARK: 启动
 
     func boot() {
-        guard !booted else { return }
+        guard !booted else {
+            AKLogInfo("plugin", "boot 被重复调用，跳过")
+            return
+        }
         booted = true
+        AKLogInfo("plugin", "boot 开始，插件目录 \(AKPaths.plugins.path)")
 
         if !crashSuspects.isEmpty {
             for id in crashSuspects { disabled.insert(id) }
@@ -181,7 +185,11 @@ final class PluginManager: NSObject, ObservableObject {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(at: AKPaths.plugins,
                                                      includingPropertiesForKeys: nil,
-                                                     options: [.skipsHiddenFiles]) else { return }
+                                                     options: [.skipsHiddenFiles]) else {
+            AKLogInfo("plugin", "插件目录读不出来：\(AKPaths.plugins.path)")
+            return
+        }
+        AKLogInfo("plugin", "扫描到 \(items.count) 个条目")
 
         failures.removeAll()
         for url in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
