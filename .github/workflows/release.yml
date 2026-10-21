@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（不带 v，如 0.2.0）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备打包依赖
+        run: pip3 install --quiet pillow
+
+      - name: 打包
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          PYTHON=python3 bash Scripts/build.sh
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
+            "build/A-Kit.app" "build/A-Kit-${VERSION}.zip"
+          SHA=$(shasum -a 256 "build/A-Kit-${VERSION}.zip" | awk '{print $1}')
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+          echo "ZIP=build/A-Kit-${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - name: 生成 manifest.json
+        run: |
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/A-Kit-${VERSION}.zip"
+          python3 Scripts/gen_manifest.py \
+            --version "$VERSION" \
+            --url "$URL" \
+            --sha256 "$SHA" \
+            --notes "$(git log -1 --pretty=%s)" \
+            --out build/manifest.json
+          cat build/manifest.json
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: A-Kit ${{ env.VERSION }}
+          generate_release_notes: true
+          files: |
+            build/A-Kit-${{ env.VERSION }}.zip
+            build/manifest.json
