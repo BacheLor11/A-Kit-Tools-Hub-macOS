@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "akit",
+  "name": "A-Kit",
+  "tagline": "自己写的小工具，自己收着。",
+  "bundleId": "com.aibao.AKitHub",
+  "category": "tool",
+  "minOS": "13.0",
+  "asset": "A-Kit-*.zip",
+  "statusBar": { "supported": true },
+  "article": "https://askb.app"
+}

@@ -18,6 +18,12 @@ jobs:
       - name: Build
         run: swift build --disable-sandbox
 
+      - name: 打包脚本冒烟（干净 runner 里没有 build/）
+        run: |
+          bash Scripts/build.sh
+          test -x "build/A-Kit.app/Contents/MacOS/AKitHub"
+          test -f "build/A-Kit.app/Contents/Resources/seed-manifest.json"
+
       - name: Protocol selftest
         run: ./.build/debug/AKitHub --selftest
 
