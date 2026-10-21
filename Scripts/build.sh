@@ -9,6 +9,9 @@ APP="$BUILD_DIR/$APP_NAME.app"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
 PY="${PYTHON:-python3}"
 
+# 干净 clone / CI 里没有 build/，后面要往里拷图标，先建出来
+mkdir -p "$BUILD_DIR"
+
 echo "▸ 编译 (release)…"
 swift build -c release --disable-sandbox
 
