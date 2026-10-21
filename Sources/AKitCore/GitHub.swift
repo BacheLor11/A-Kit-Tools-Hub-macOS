@@ -222,16 +222,29 @@ public enum GitHubAPI {
         }
     }
 
+    /// 仓库的默认分支。raw 地址**不认 `HEAD`**（会 404），必须用真实分支名。
+    static func defaultBranch(owner: String, repo: String, token: String?) async -> String? {
+        guard let url = URL(string: "\(apiBase)/repos/\(owner)/\(repo)") else { return nil }
+        guard let (data, _) = try? await request(url, token: token) else { return nil }
+        struct RepoInfo: Decodable { let default_branch: String? }
+        return (try? JSONDecoder().decode(RepoInfo.self, from: data))?.default_branch
+    }
+
     /// 读取仓库里的 `akit.json`（约定放在根目录，也可放 .akit/tool.json）。
     /// 先按 release 的 tag 取，取不到再退回默认分支。
     public static func toolManifest(owner: String, repo: String, tag: String?,
                                     token: String? = nil) async throws -> AKToolManifest? {
         var refs: [String] = []
         if let tag { refs.append(tag) }
-        refs.append("HEAD")
+        if let branch = await defaultBranch(owner: owner, repo: repo, token: token) {
+            refs.append(branch)
+        }
+        // API 不通（限流 / Enterprise）时的兜底
+        refs.append(contentsOf: ["main", "master"])
 
+        var seen = Set<String>()
         let names = ["akit.json", ".akit/tool.json"]
-        for ref in refs {
+        for ref in refs where seen.insert(ref).inserted {
             for name in names {
                 guard let url = URL(string: "\(rawBase)/\(owner)/\(repo)/\(ref)/\(name)") else { continue }
                 var req = URLRequest(url: url)
