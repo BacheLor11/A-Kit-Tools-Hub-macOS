@@ -14,12 +14,12 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: 准备打包依赖
-        run: pip3 install --quiet pillow
+        run: pip3 install --quiet pillow || echo '没装上也行，图标已在 Resources/ 里'
 
       - name: 打包
         run: |
