@@ -34,7 +34,7 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/BacheLor11/A-Kit.git", from: "0.3.0")
+    .package(url: "https://github.com/BacheLor11/A-Kit-Tools-Hub-macOS.git", from: "0.3.0")
 ],
 targets: [
     .target(name: "MyTool", dependencies: [
