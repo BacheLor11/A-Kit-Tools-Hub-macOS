@@ -17,14 +17,38 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 准备打包依赖
         run: pip3 install --quiet pillow || echo '没装上也行，图标已在 Resources/ 里'
 
-      - name: 打包
+      - name: 确认版本
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
-          VERSION="${VERSION#v}"
+          echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+
+      # generate_release_notes 只认 PR 关联，纯 commit 的仓库会退化成一句「Full Changelog」，
+      # 所以这里自己从 git log 攒说明，读起来至少像人写的更新日志。
+      - name: 生成更新说明
+        run: |
+          mkdir -p build
+          PREV=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || true)
+          RANGE="${PREV:+$PREV..}HEAD"
+          {
+            echo "## A-Kit ${VERSION}"
+            echo
+            git log --no-merges --reverse --pretty=format:'- %s%n' "$RANGE"
+            if [ -n "$PREV" ]; then
+              echo
+              echo "**完整对比**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...v${VERSION}"
+            fi
+          } > build/RELEASE_NOTES.md
+          cat build/RELEASE_NOTES.md
+
+      - name: 打包
+        run: |
+          VERSION="${{ env.VERSION }}"
           PYTHON=python3 bash Scripts/build.sh
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent \
             "build/A-Kit.app" "build/A-Kit-${VERSION}.zip"
@@ -49,7 +73,8 @@ jobs:
         with:
           tag_name: v${{ env.VERSION }}
           name: A-Kit ${{ env.VERSION }}
-          generate_release_notes: true
+          body_path: build/RELEASE_NOTES.md
+          generate_release_notes: false
           files: |
             build/A-Kit-${{ env.VERSION }}.zip
             build/manifest.json
