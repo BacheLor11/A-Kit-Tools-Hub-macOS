@@ -44,6 +44,8 @@ import SwiftUI
 import AKitPluginKit
 
 final class MyToolPlugin: NSObject, AKPluginDescriptor {
+    // ⚠️ 必须等于工具的 bundle id。
+    // A-Kit 用它对上「安装层」那份记录，否则你会被当成一个没有 app 的孤儿插件。
     var pluginId: String { "com.example.MyTool" }
     var displayName: String { "MyTool" }
     var version: String { "1.0.0" }

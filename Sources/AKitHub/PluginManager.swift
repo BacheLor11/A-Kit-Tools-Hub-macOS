@@ -19,8 +19,12 @@ final class LoadedPlugin: ObservableObject, Identifiable {
     @Published var statusText: String?
     /// 加载 / 运行错误
     @Published var error: String?
+    /// 非空表示插件虽然加载了，但被让位了（比如工具正独立运行着）
+    @Published var inactiveReason: String?
     /// 面板视图是否已创建（懒加载，插件多时不拖慢启动）
     @Published private(set) var materialized = false
+
+    var isActive: Bool { inactiveReason == nil }
 
     private var _panelView: NSView?
     private var _fullView: NSView?
@@ -160,6 +164,17 @@ final class PluginManager: NSObject, ObservableObject {
         sentinel.clear()
     }
 
+    /// 重新扫描。用于装/卸插件之后。
+    ///
+    /// 已经 dlopen 的插件不 `dlclose`（它的 NSView 可能还挂在那儿），
+    /// 只做「清列表 → 重新加载」，同一路径 dlopen 会复用已有句柄。
+    func reload() {
+        for p in plugins { p.descriptor.deactivate() }
+        plugins.removeAll()
+        handles.removeAll()
+        scanAndLoad()
+    }
+
     // MARK: 扫描与加载
 
     func scanAndLoad() {
@@ -191,8 +206,20 @@ final class PluginManager: NSObject, ObservableObject {
 
                 handles[record.id] = loaded.handle
                 let plugin = LoadedPlugin(record: loaded.record, descriptor: loaded.descriptor)
+
+                // 单实例仲裁：工具的独立 app 正在跑，插件就让位。
+                // 两个实例各跑一份引擎、同时清理同一块磁盘，那是数据安全问题。
+                let runningBundleId = record.appPath.flatMap {
+                    Bundle(url: URL(fileURLWithPath: $0))?.bundleIdentifier
+                }
+                let appIsRunning = runningBundleId.map { Scanner.isRunning(bundleId: $0) } ?? false
+                if appIsRunning {
+                    plugin.inactiveReason = "\(record.displayName) 正在独立运行"
+                    AKLogInfo("plugin", "\(record.displayName) 独立运行中，插件让位")
+                }
+
                 plugins.append(plugin)
-                loaded.descriptor.activate()
+                if !appIsRunning { loaded.descriptor.activate() }
                 AKLogInfo("plugin", "已加载 \(record.displayName) v\(record.version)（ABI \(record.abiVersion)）")
             } catch {
                 failures.append((url, error.localizedDescription))
@@ -205,6 +232,36 @@ final class PluginManager: NSObject, ObservableObject {
     // MARK: 启用 / 禁用
 
     func isDisabled(_ pluginId: String) -> Bool { disabled.contains(pluginId) }
+
+    /// 工具正在独立运行时，用户点「接管」。
+    ///
+    /// 流程是协商而不是硬抢：请它优雅退出（保存状态）→ 等它真的退 → 插件才激活。
+    func takeOver(pluginId: String) {
+        guard let p = plugin(id: pluginId),
+              let appPath = p.record.appPath,
+              let bundle = Bundle(url: URL(fileURLWithPath: appPath)),
+              let bundleId = bundle.bundleIdentifier,
+              let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
+        else { return }
+
+        AKLogInfo("plugin", "接管 \(pluginId)：请求 \(bundleId) 退出")
+        app.terminate()
+
+        Task { @MainActor in
+            for _ in 0..<24 {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                if !Scanner.isRunning(bundleId: bundleId) { break }
+            }
+            if Scanner.isRunning(bundleId: bundleId) {
+                p.inactiveReason = "它没有退出，可能正在执行任务"
+            } else {
+                p.inactiveReason = nil
+                p.descriptor.activate()
+                AKLogInfo("plugin", "接管 \(pluginId) 完成")
+            }
+            objectWillChange.send()
+        }
+    }
 
     /// 禁用需要重启 A-Kit —— dlopen 之后不能安全卸载（插件的 NSView 还活着）
     func disable(_ pluginId: String) {
@@ -261,5 +318,14 @@ final class PluginManager: NSObject, ObservableObject {
 
     func plugin(id: String) -> LoadedPlugin? {
         plugins.first { $0.record.id == id }
+    }
+
+    /// 把事件广播给所有插件（来自老协议工具或插件自己）。
+    ///
+    /// `from` 用来避免回声：谁发的就不回给谁。
+    func broadcast(name: String, payload: [String: String], from: String?) {
+        for p in plugins where p.record.id != from {
+            p.descriptor.handleEvent?(name, payload: payload)
+        }
     }
 }

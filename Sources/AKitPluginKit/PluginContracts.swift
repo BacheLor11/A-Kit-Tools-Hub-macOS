@@ -67,6 +67,12 @@ public protocol AKPluginDescriptor: NSObjectProtocol {
     func activate()
     /// 被宿主卸载 / 宿主退出
     func deactivate()
+
+    /// 收到别的工具发来的事件（可选实现）。
+    ///
+    /// 标成 `@objc optional` 是为了不升 ABI：早期插件没实现也不影响加载，
+    /// 宿主调用时会做存在性判断。
+    @objc optional func handleEvent(_ name: String, payload: [String: String]?)
 }
 
 // MARK: - 宿主回调
