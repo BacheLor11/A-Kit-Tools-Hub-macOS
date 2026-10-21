@@ -114,6 +114,8 @@ struct AKitMain {
             state.settings.scanDirectories = dirs.split(separator: ":").map(String.init)
             state.settings.manifestURL = ""
         }
+        // 快照也要把插件带上，否则验证不到「工具自己的界面嵌进来」这条链路
+        state.pluginManager.scanAndLoad()
         Task { await state.refreshAll() }
 
         let width: CGFloat = isPanel ? 336 : (isImport ? 640 : 1080)
@@ -160,6 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
     private var window: NSWindow?
+    /// 菜单栏代持：把配成 hubbar 的插件图标画在系统菜单栏上
+    private let statusProxy = StatusItemProxy()
     private var hotKeyRef: EventHotKeyRef?
     private var globalClickMonitor: Any?
     private var localKeyMonitor: Any?
@@ -172,11 +176,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setupWindow()
         registerHotKey()
         observeSettingsChanges()
+        bootPlugins()
 
         // 首次启动（没有配置文件）直接把主窗口打开
         if !FileManager.default.fileExists(atPath: AKPaths.settingsFile.path) {
             showWindow()
         }
+    }
+
+    /// 加载插件。
+    ///
+    /// 插件崩了宿主一起崩，所以这里必须放在所有 UI 就绪之后——
+    /// 至少用户能看见面板，而不是黑屏一片。
+    private func bootPlugins() {
+        let pm = state.pluginManager
+        pm.onOpenWindow = { [weak self] in self?.showWindow() }
+        pm.onPresentFull = { [weak self] pluginId in
+            guard let self else { return }
+            self.hidePanel()
+            self.state.selectedPluginId = pluginId
+            self.state.page = .plugins
+            self.showWindow()
+        }
+
+        statusProxy.onClick = { [weak self] pluginId in
+            guard let self else { return }
+            self.state.focusPluginId = pluginId
+            if let p = self.state.pluginManager.plugin(id: pluginId) {
+                self.state.selectedPluginId = p.id
+            }
+            self.showPanel()
+        }
+
+        state.onLayoutChanged = { [weak self] in
+            self?.statusProxy.invalidate()
+            self?.syncPluginBars()
+        }
+
+        pm.boot()
+        syncPluginBars()
+        if let notice = pm.notice {
+            state.toast = AppState.Toast(text: notice, ok: false)
+        }
+    }
+
+    /// 把「哪些插件要挂在系统菜单栏」同步给代持层
+    private func syncPluginBars() {
+        statusProxy.sync(plugins: state.pluginManager.plugins, layout: state.layout)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -386,6 +432,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showPanel() {
+        // 面板打开时顺手对齐一次菜单栏代持状态（有签名缓存，不会闪）
+        syncPluginBars()
         if panel == nil { panel = makePanel() }
         guard let p = panel else { return }
         resizePanelToFit(p)
