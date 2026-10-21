@@ -48,6 +48,8 @@ final class AppState: ObservableObject {
     @Published var settings: AKSettings
     @Published var layout: AKLayout
     @Published var entries: [ToolEntry] = []
+    /// 只通过 SDK 接进来、清单与扫描都没收录的工具（兜底卡片）
+    @Published var runtimeEntries: [ToolEntry] = []
     @Published var connected: [String: AKToolInfo] = [:]
     @Published var query: String = ""
     @Published var health: [String: HealthReport] = [:]
@@ -91,6 +93,14 @@ final class AppState: ObservableObject {
 
         server.onClientsChanged = { [weak self] in
             DispatchQueue.main.async { self?.syncConnected() }
+        }
+        server.onStatusChanged = { [weak self] bundleId, status in
+            DispatchQueue.main.async {
+                // 只改这一个键，不重建整本字典：高频刷新时界面不抖
+                guard let self, var info = self.connected[bundleId] else { return }
+                info.status = status
+                self.connected[bundleId] = info
+            }
         }
         server.start()
         listening = server.isListening
@@ -146,10 +156,18 @@ final class AppState: ObservableObject {
 
     // MARK: 数据
 
+    // 面板 / 列表以前只渲染 entries（清单 ∩ 扫描）。第三方工具按 SDK 接进来后，
+    // 只要没装进扫描目录、或者没写进任何清单，就一张卡都没有 ——
+    // 而它自己的菜单栏图标此时已经让给了 A-Kit，结果是入口彻底消失。
+    // runtimeEntries 把「注册了但没被收录」的工具补成临时条目：能点开、能调菜单、能登记。
+
+    /// 清单 + 扫描结果 + 运行时兜底，界面统一看这个
+    var allEntries: [ToolEntry] { entries + runtimeEntries }
+
     var filtered: [ToolEntry] {
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return entries }
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return allEntries }
         let q = query.lowercased()
-        return entries.filter {
+        return allEntries.filter {
             $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q)
                 || ($0.spec?.tagline ?? "").lowercased().contains(q)
         }
@@ -157,9 +175,61 @@ final class AppState: ObservableObject {
 
     var updates: [ToolEntry] { entries.filter { $0.updateAvailable } }
 
-    var installedCount: Int { entries.filter { $0.isInstalled }.count }
+    var installedCount: Int { allEntries.filter { $0.isInstalled }.count }
 
-    func entry(_ id: String) -> ToolEntry? { entries.first { $0.id == id } }
+    func entry(_ id: String) -> ToolEntry? { allEntries.first { $0.id == id } }
+
+    /// 重建运行时兜底条目。只在连接集合或扫描结果变化时调，不去碰状态刷新。
+    func rebuildRuntimeEntries() {
+        let known = Set(entries.compactMap { $0.installed?.bundleId ?? $0.spec?.bundleId })
+        runtimeEntries = connected.values
+            .filter { !known.contains($0.bundleId) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { info in
+                var app: InstalledApp?
+                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: info.bundleId) {
+                    app = Scanner.readApp(at: url)
+                }
+                return ToolEntry(id: info.bundleId, spec: nil, installed: app,
+                                 latest: nil, runtimeName: info.name)
+            }
+    }
+
+    /// 该工具是不是只靠 SDK 接入、还没被收录
+    func isUnregistered(_ bundleId: String) -> Bool {
+        runtimeEntries.contains { $0.id == bundleId }
+    }
+
+    /// 把运行时工具正式登记进本机清单，下次启动也认得
+    func registerTool(bundleId: String) {
+        guard let info = connected[bundleId] else { return }
+        let spec = ToolSpec(id: Self.slug(from: info.bundleId, fallback: info.name),
+                            name: info.name,
+                            bundleId: info.bundleId,
+                            category: "tool",
+                            statusBar: StatusBarSpec(supported: true),
+                            channels: ["stable": ChannelSpec(version: info.version)])
+        if ManifestStore.registerLocal(spec) {
+            AKLogInfo("manifest", "登记本机工具 \(info.name) (\(info.bundleId))")
+            showToast("已登记 \(info.name)", ok: true)
+            Task {
+                await loadManifest()
+                await rescan()
+            }
+        } else {
+            showToast("登记失败，检查 tools.local.json 的权限", ok: false)
+        }
+    }
+
+    /// bundleId 尾段 → 合法 id（com.aibao.ASweep → asweep）
+    static func slug(from bundleId: String, fallback: String) -> String {
+        let base = bundleId.split(separator: ".").last.map(String.init) ?? fallback
+        let cleaned = base.lowercased().map { ch -> Character in
+            (ch.isLetter || ch.isNumber) ? ch : "-"
+        }
+        let s = String(cleaned).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return s.isEmpty ? "tool-\(abs(bundleId.hashValue) % 10000)" : s
+    }
 
     func isConnected(_ entry: ToolEntry) -> Bool {
         connected[entry.installed?.bundleId ?? entry.spec?.bundleId ?? entry.id] != nil
@@ -268,6 +338,8 @@ final class AppState: ObservableObject {
         var map: [String: AKToolInfo] = [:]
         for t in server.connectedTools { map[t.bundleId] = t }
         connected = map
+        rebuildRuntimeEntries()
+        AKLogInfo("app", "connected=\(map.count) runtime=\(runtimeEntries.count)")
     }
 
     // MARK: GitHub 安装
@@ -547,7 +619,12 @@ final class AppState: ObservableObject {
 
     func open(_ entry: ToolEntry) {
         guard let app = entry.installed else {
-            install(entry, isUpdate: false)
+            if entry.spec != nil {
+                install(entry, isUpdate: false)
+            } else {
+                // 只在运行时注册过、LaunchServices 也定位不到 .app：没法打开
+                showToast("找不到 \(entry.name) 的 .app 位置", ok: false)
+            }
             return
         }
         NSWorkspace.shared.openApplication(at: app.path, configuration: NSWorkspace.OpenConfiguration()) { _, err in

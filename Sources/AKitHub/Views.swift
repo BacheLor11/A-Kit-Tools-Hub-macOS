@@ -342,9 +342,12 @@ private struct ToolRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 26) {
             VStack(alignment: .leading, spacing: 5) {
-                AKMeta(text: entry.isInstalled ? "已安装" : "未安装",
-                       color: entry.isInstalled ? ak.accent : ak.inkSoft.opacity(0.7))
-                Text(entry.installed?.displayVersion ?? (entry.latest?.version ?? "—"))
+                AKMeta(text: entry.isRuntimeOnly ? "未登记" : (entry.isInstalled ? "已安装" : "未安装"),
+                       color: entry.isRuntimeOnly ? ak.accent2
+                             : (entry.isInstalled ? ak.accent : ak.inkSoft.opacity(0.7)))
+                Text(state.connected[entry.id]?.version
+                     ?? entry.installed?.displayVersion
+                     ?? (entry.latest?.version ?? "—"))
                     .font(AKFont.sans(11))
                     .foregroundColor(ak.inkSoft)
                 if let d = entry.installed?.modified {
@@ -396,6 +399,10 @@ private struct ToolRowView: View {
             Spacer(minLength: 12)
 
             HStack(spacing: 8) {
+                if entry.isRuntimeOnly {
+                    Button("登记到本机清单") { state.registerTool(bundleId: entry.id) }
+                        .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                }
                 if entry.isInstalled {
                     Button("打开") { state.open(entry) }
                         .buttonStyle(AKPrimaryButtonStyle())

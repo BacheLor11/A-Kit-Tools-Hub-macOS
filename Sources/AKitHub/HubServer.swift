@@ -19,6 +19,8 @@ final class HubServer {
 
     /// 连接集合变化（注册 / 断开 / 菜单更新）
     var onClientsChanged: (() -> Void)?
+    /// 只是某工具的状态文字变了（轻量通道，不重建条目）
+    var onStatusChanged: ((_ bundleId: String, _ status: String) -> Void)?
     /// 某个工具发来事件（用于界面展示 / 转发）
     var onEvent: ((_ name: String, _ payload: [String: String], _ from: String?) -> Void)?
 
@@ -150,6 +152,15 @@ final class HubServer {
             clients[key]?.info = info
             AKLogInfo("hub", "register \(info.name) v\(info.version) items=\(info.menu.count)")
             onClientsChanged?()
+        case "status":
+            // 轻量通道：只改状态文字，不动菜单，也不打日志。
+            // 高频刷新的工具（CPU/内存/进度）应该走这里，否则日志与界面都会被刷爆。
+            guard let params = obj["params"] as? [String: Any],
+                  let text = params["status"] as? String,
+                  let bundleId = clients[key]?.info.bundleId,
+                  clients[key]?.info.status != text else { return }
+            clients[key]?.info.status = text
+            onStatusChanged?(bundleId, text)
         case "event":
             // 工具 → Hub 的事件：转发给订阅了该事件的其他工具
             let params = obj["params"] as? [String: Any] ?? [:]

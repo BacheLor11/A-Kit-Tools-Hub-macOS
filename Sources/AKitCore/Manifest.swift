@@ -136,22 +136,29 @@ public struct ToolEntry: Identifiable {
     public var installed: InstalledApp?
     public var latest: ChannelSpec?
     public var channelName: String
+    /// 只在运行时成立的名字：给「只通过 SDK 接入、还没登记」的工具兜底显示。
+    /// 正规来源优先，它只排在 id 前面。
+    public var runtimeName: String?
 
-    public var name: String { spec?.name ?? installed?.name ?? id }
+    public var name: String { spec?.name ?? installed?.name ?? runtimeName ?? id }
     public var tagline: String { spec?.tagline ?? "" }
     public var isInstalled: Bool { installed != nil }
+    /// 不在清单里、也没被扫描登记，只靠 SDK 注册上来的
+    public var isRuntimeOnly: Bool { spec == nil && installed == nil }
 
     public var updateAvailable: Bool {
         guard let installed, let latest else { return false }
         return latest.akVersion > installed.akVersion
     }
 
-    public init(id: String, spec: ToolSpec?, installed: InstalledApp?, latest: ChannelSpec?, channelName: String = "stable") {
+    public init(id: String, spec: ToolSpec?, installed: InstalledApp?, latest: ChannelSpec?,
+                channelName: String = "stable", runtimeName: String? = nil) {
         self.id = id
         self.spec = spec
         self.installed = installed
         self.latest = latest
         self.channelName = channelName
+        self.runtimeName = runtimeName
     }
 }
 

@@ -214,7 +214,10 @@ public final class AKHubClient {
         attachIfPossible()
     }
 
-    /// 菜单或状态变了，推一次给 Hub
+    /// 菜单或状态变了，推一次给 Hub。
+    ///
+    /// 注意：这是「整包重发」，Hub 侧会重建这个工具的条目。只有菜单项结构
+    /// 变了才用它；单纯刷新状态文字请用 `pushStatus(_:)`。
     public func update(menu: [AKMenuItem]? = nil, status: String? = nil) {
         guard var info = current else { return }
         if let menu { info.menu = menu }
@@ -222,6 +225,20 @@ public final class AKHubClient {
         current = info
         guard isConnected else { return }
         sendRegister(info)
+    }
+
+    /// 只推状态文字（面板卡片 / 菜单栏副标题那一行），不重发菜单。
+    ///
+    /// 高频刷新状态（CPU、内存、进度这类每秒都在变的数字）请一律走这里：
+    /// 走 `update(status:)` 会整包重发，Hub 每秒重建一次条目，日志也会被刷满。
+    /// 文本没变化时直接返回，不产生任何网络写入。
+    public func pushStatus(_ text: String) {
+        guard var info = current, info.status != text else { return }
+        info.status = text
+        current = info
+        guard isConnected else { return }
+        socket.send(["jsonrpc": "2.0", "id": UUID().uuidString,
+                     "method": "status", "params": ["status": text]])
     }
 
     /// 发一个事件给 Hub（会转发给订阅了该事件的其他工具）
