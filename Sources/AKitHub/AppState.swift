@@ -1,0 +1,688 @@
+import Foundation
+import SwiftUI
+import AppKit
+import AKitCore
+import AKitStatusKit
+
+@MainActor
+final class AppState: ObservableObject {
+
+    enum Page: String, CaseIterable, Identifiable {
+        case tools, updates, menuBar, thirdParty, settings
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .tools: return "工具"
+            case .updates: return "更新"
+            case .menuBar: return "菜单栏"
+            case .thirdParty: return "第三方"
+            case .settings: return "设置"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .tools: return "square.grid.2x2"
+            case .updates: return "arrow.triangle.2.circlepath"
+            case .menuBar: return "menubar.rectangle"
+            case .thirdParty: return "puzzlepiece.extension"
+            case .settings: return "slider.horizontal.3"
+            }
+        }
+    }
+
+    struct Job: Equatable {
+        var title: String
+        var detail: String
+        var progress: Double?
+    }
+
+    struct Toast: Equatable {
+        var text: String
+        var ok: Bool
+        var id = UUID()
+    }
+
+    // MARK: 状态
+
+    @Published var page: Page = .tools
+    @Published var settings: AKSettings
+    @Published var layout: AKLayout
+    @Published var entries: [ToolEntry] = []
+    @Published var connected: [String: AKToolInfo] = [:]
+    @Published var query: String = ""
+    @Published var health: [String: HealthReport] = [:]
+    @Published var sizes: [String: Int64] = [:]
+    @Published var usage: AKUsage
+    @Published var job: Job?
+    @Published var toast: Toast?
+    @Published var manifestLabel: String = "尚未加载"
+    @Published var lastRefresh: Date?
+    @Published var selectedId: String?
+    @Published var listening = false
+
+    // GitHub 安装
+    @Published var imported: [ImportedTool] = []
+    @Published var importCandidate: ImportCandidate?
+    @Published var importError: String?
+    @Published var parsing = false
+    @Published var showImportSheet = false
+    @Published var lastImportCheck: Date?
+
+    // Dev 热重载
+    @Published var watching: [String] = []
+    @Published var lastBuild: [String: String] = [:]
+
+    private var manifest: Manifest?
+    private let server = HubServer()
+    private var watcher: DevWatcher?
+
+    // MARK: 初始化
+
+    init(bootstrap: Bool = true) {
+        AKPaths.ensure()
+        settings = AKSettings.load()
+        layout = AKLayout.load()
+        usage = AKUsage.load()
+        imported = ImportedStore.load()
+
+        server.onClientsChanged = { [weak self] in
+            DispatchQueue.main.async { self?.syncConnected() }
+        }
+        server.start()
+        listening = server.isListening
+        AKLogInfo("app", "A-Kit 启动，socket \(AKPaths.socket.path)")
+
+        guard bootstrap else { return }
+        Task {
+            await loadManifest()
+            await rescan()
+            if settings.autoCheckUpdates {
+                await checkUpdates(silent: true)
+                await checkGitHubUpdates(silent: true)
+            }
+            startDevWatchIfNeeded()
+        }
+    }
+
+    // MARK: 清单合并（内置 + 从 GitHub 装的）
+
+    /// 把导入的工具当成清单的一部分，这样它们和内置工具走完全一样的安装/更新/体检流程。
+    var effectiveManifest: Manifest? {
+        var tools = manifest?.tools ?? []
+        let existing = Set(tools.map(\.id))
+        let extra = imported.filter { !existing.contains($0.id) }.map { $0.spec() }
+        if tools.isEmpty && extra.isEmpty { return nil }
+        tools.append(contentsOf: extra)
+        return Manifest(schemaVersion: 1, generatedAt: manifest?.generatedAt, tools: tools)
+    }
+
+    var importedIds: Set<String> { Set(imported.map(\.id)) }
+
+    func isImported(_ entry: ToolEntry) -> Bool { importedIds.contains(entry.id) }
+
+    func sourceLabel(_ entry: ToolEntry) -> String? {
+        if let t = imported.first(where: { $0.id == entry.id }) {
+            return t.slug ?? "直链安装"
+        }
+        if let repo = entry.spec?.repo, !repo.isEmpty { return repo }
+        return nil
+    }
+
+    // MARK: 数据
+
+    var filtered: [ToolEntry] {
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return entries }
+        let q = query.lowercased()
+        return entries.filter {
+            $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q)
+                || ($0.spec?.tagline ?? "").lowercased().contains(q)
+        }
+    }
+
+    var updates: [ToolEntry] { entries.filter { $0.updateAvailable } }
+
+    var installedCount: Int { entries.filter { $0.isInstalled }.count }
+
+    func entry(_ id: String) -> ToolEntry? { entries.first { $0.id == id } }
+
+    func isConnected(_ entry: ToolEntry) -> Bool {
+        connected[entry.installed?.bundleId ?? entry.spec?.bundleId ?? entry.id] != nil
+    }
+
+    func statusText(_ entry: ToolEntry) -> String? {
+        let key = entry.installed?.bundleId ?? entry.spec?.bundleId ?? entry.id
+        if let info = connected[key], let s = info.status, !s.isEmpty { return s }
+        if let days = usage.daysSinceOpened(entry.id) {
+            if days == 0 { return "今天用过" }
+            if days > 90 { return "\(days) 天没打开过" }
+        }
+        return nil
+    }
+
+    // MARK: 载入
+
+    func loadManifest() async {
+        if !settings.manifestURL.isEmpty {
+            do {
+                let m = try await ManifestStore.loadRemote(settings.manifestURL)
+                manifest = m
+                manifestLabel = "远程清单 · \(m.tools.count) 个工具"
+                return
+            } catch {
+                AKLogInfo("manifest", "远程失败：\(error.localizedDescription)")
+            }
+        }
+        if let cached = ManifestStore.loadCache() {
+            manifest = cached
+            manifestLabel = "本地缓存 · \(cached.tools.count) 个工具"
+            return
+        }
+        if let bundled = ManifestStore.loadBundled() {
+            manifest = bundled
+            manifestLabel = "内置清单 · \(bundled.tools.count) 个工具"
+            return
+        }
+        manifest = nil
+        manifestLabel = "没有可用清单"
+    }
+
+    func rescan() async {
+        let settings = self.settings
+        imported = ImportedStore.load()
+        let m = effectiveManifest
+        var known = Set((m?.tools ?? []).map(\.bundleId))
+        for t in imported { known.insert(t.bundleId) }
+        let apps = await Task.detached(priority: .userInitiated) {
+            Scanner.scan(settings: settings, knownBundleIds: known)
+        }.value
+        entries = Registry.merge(manifest: m, installed: apps,
+                                 channel: settings.channel, fallbackIds: [])
+
+        // 新装 / 新登记的工具默认放进第一个分组，不然菜单栏页会一堆「未分组」
+        if let first = layout.groups.first {
+            var changed = false
+            for e in entries where e.isInstalled {
+                let assigned = layout.groups.contains { $0.items.contains(e.id) }
+                if !assigned {
+                    layout.assign(e.id, to: first.id)
+                    changed = true
+                }
+            }
+            if changed { layout.save() }
+        }
+
+        lastRefresh = Date()
+        syncConnected()
+    }
+
+    func refreshAll() async {
+        await loadManifest()
+        await rescan()
+        await checkUpdates(silent: true)
+        await checkGitHubUpdates(silent: true)
+    }
+
+    func checkUpdates(silent: Bool) async {
+        await loadManifest()
+        let settings = self.settings
+        imported = ImportedStore.load()
+        let m = effectiveManifest
+        var known = Set((m?.tools ?? []).map(\.bundleId))
+        for t in imported { known.insert(t.bundleId) }
+        let apps = await Task.detached(priority: .userInitiated) {
+            Scanner.scan(settings: settings, knownBundleIds: known)
+        }.value
+        entries = Registry.merge(manifest: m, installed: apps,
+                                 channel: settings.channel, fallbackIds: [])
+        if !silent {
+            let n = entries.filter { $0.updateAvailable }.count
+            showToast(n == 0 ? "已经是最新版本" : "发现 \(n) 个更新", ok: true)
+        }
+    }
+
+    private func syncConnected() {
+        var map: [String: AKToolInfo] = [:]
+        for t in server.connectedTools { map[t.bundleId] = t }
+        connected = map
+    }
+
+    // MARK: GitHub 安装
+
+    /// 解析一个链接：只读不写，结果放到 importCandidate 给界面预览
+    func inspectImport(_ input: String) {
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        parsing = true
+        importError = nil
+        importCandidate = nil
+        let token = settings.githubToken
+        Task {
+            do {
+                let c = try await ImportResolver.inspect(text, token: token)
+                importCandidate = c
+                AKLogInfo("import", "resolved \(text) → \(c.assetName) \(c.version)")
+            } catch {
+                importError = error.localizedDescription
+                AKLogInfo("import", "resolve failed: \(error.localizedDescription)")
+            }
+            parsing = false
+        }
+    }
+
+    func confirmImport() {
+        guard let c = importCandidate else { return }
+        job = Job(title: "安装 \(c.name)", detail: "准备下载…")
+        Task {
+            do {
+                let record = try await ImportInstaller.install(
+                    c, into: targetDirectory(), backupRoot: AKPaths.backups) { msg in
+                        Task { @MainActor in self.job?.detail = msg }
+                    }
+                job = nil
+                importCandidate = nil
+                showImportSheet = false
+                imported = ImportedStore.load()
+                showToast("\(record.name) 已安装", ok: true)
+                await rescan()
+            } catch {
+                job = nil
+                showToast(error.localizedDescription, ok: false)
+                AKLogInfo("import", "install failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func cancelImport() {
+        importCandidate = nil
+        importError = nil
+        showImportSheet = false
+    }
+
+    /// 只检查从 GitHub 装的工具：拉最新 release，tag 变了就把下载地址换掉
+    func checkGitHubUpdates(silent: Bool) async {
+        var list = ImportedStore.load()
+        guard !list.isEmpty else { return }
+        let token = settings.githubToken
+        var changed = false
+
+        for i in list.indices {
+            guard let owner = list[i].owner, let repo = list[i].repo else { continue }
+            do {
+                let rel = try await GitHubAPI.latestRelease(owner: owner, repo: repo, token: token)
+                guard rel.tag != list[i].tag else { continue }
+                let m = try? await GitHubAPI.toolManifest(owner: owner, repo: repo, tag: rel.tag, token: token)
+                guard let asset = AssetPicker.pick(rel.assets, manifest: m) else { continue }
+                list[i].tag = rel.tag
+                list[i].version = ImportResolver.normalizeVersion(rel.tag)
+                list[i].assetName = asset.name
+                list[i].assetURL = asset.url
+                changed = true
+                AKLogInfo("import", "\(owner)/\(repo) 有新版本 \(rel.tag)")
+            } catch {
+                AKLogInfo("import", "检查 \(owner)/\(repo) 失败：\(error.localizedDescription)")
+            }
+        }
+
+        lastImportCheck = Date()
+        if changed {
+            ImportedStore.save(list)
+            imported = list
+            await rescan()
+            if !silent { showToast("来自 GitHub 的工具已刷新", ok: true) }
+        }
+    }
+
+    /// 忘掉这个来源（不删 app）
+    func forgetSource(_ entry: ToolEntry) {
+        guard isImported(entry) else { return }
+        ImportedStore.remove(id: entry.id)
+        imported = ImportedStore.load()
+        Task { await rescan() }
+        showToast("已忘记 \(entry.name) 的来源，app 还在原处", ok: true)
+    }
+
+    // MARK: 安装 / 更新 / 卸载
+
+    private func targetDirectory() -> URL {
+        AKPaths.expand(settings.installDirectory)
+    }
+
+    func install(_ entry: ToolEntry, isUpdate: Bool) {
+        guard let spec = entry.spec else {
+            showToast("这个工具还没登记到清单里", ok: false)
+            return
+        }
+        guard let channel = spec.channel(settings.channel), let urlString = channel.url,
+              let url = URL(string: urlString) else {
+            showToast("\(spec.name) 还没有配置下载源", ok: false)
+            return
+        }
+
+        job = Job(title: "\(isUpdate ? "更新" : "安装") \(spec.name)", detail: "下载中…")
+        Task {
+            do {
+                let file = try await Installer.download(
+                    from: url,
+                    to: AKPaths.downloads.appendingPathComponent("\(spec.id)-\(channel.version).zip"))
+
+                if let expected = channel.sha256, !expected.isEmpty {
+                    job?.detail = "校验完整性…"
+                    let actual = try Installer.sha256(at: file)
+                    guard actual.lowercased() == expected.lowercased() else {
+                        throw InstallerError.checksumMismatch(expected: expected, actual: actual)
+                    }
+                }
+
+                job?.detail = "解压…"
+                let stage = AKPaths.downloads.appendingPathComponent("stage-\(spec.id)")
+                let app = try Installer.unzip(file, into: stage)
+
+                job?.detail = "安装到 \(settings.installDirectory)…"
+                let backupRoot = AKPaths.backups
+                let installedURL: URL
+                if entry.isInstalled, let current = entry.installed, Scanner.isRunning(bundleId: current.bundleId) {
+                    // 目标在跑：先落到临时位置，再交给延迟脚本替换
+                    let staged = try Installer.install(app, into: stage.appendingPathComponent("final"),
+                                                       backupTo: backupRoot, expectedBundleId: spec.bundleId)
+                    try Installer.replaceWhileRunning(newApp: staged, target: current.path, relaunch: true)
+                    installedURL = current.path
+                } else {
+                    installedURL = try Installer.install(app, into: targetDirectory(),
+                                                         backupTo: backupRoot.appendingPathComponent(spec.name),
+                                                         expectedBundleId: spec.bundleId)
+                }
+                Installer.pruneBackups(for: spec.name, root: backupRoot, keep: settings.keepBackups)
+                try? FileManager.default.removeItem(at: stage)
+                try? FileManager.default.removeItem(at: file)
+
+                AKLogInfo("install", "\(spec.name) -> \(installedURL.path)")
+                job = nil
+                showToast("\(spec.name) \(isUpdate ? "已更新到" : "已安装") \(channel.version)", ok: true)
+                await rescan()
+            } catch {
+                job = nil
+                AKLogInfo("install", "失败：\(error.localizedDescription)")
+                showToast(error.localizedDescription, ok: false)
+            }
+        }
+    }
+
+    func uninstall(_ entry: ToolEntry, alsoSupportFiles: Bool) {
+        guard let app = entry.installed else { return }
+        do {
+            try Installer.uninstall(app.path, bundleId: app.bundleId, alsoSupportFiles: alsoSupportFiles)
+            showToast("\(entry.name) 已移到废纸篓", ok: true)
+            Task { await rescan() }
+        } catch {
+            showToast("卸载失败：\(error.localizedDescription)", ok: false)
+        }
+    }
+
+    /// 从源码重建并覆盖安装（Dev 模式）
+    func rebuild(_ entry: ToolEntry) {
+        guard let spec = entry.spec, spec.source != nil else {
+            showToast("没有配置本地源码", ok: false)
+            return
+        }
+        job = Job(title: "重建 \(spec.name)", detail: "编译中…")
+        Task {
+            do {
+                let app = try await Task.detached(priority: .userInitiated) { () -> URL in
+                    try Installer.rebuild(spec: spec) { msg in
+                        AKLogInfo("dev", msg)
+                    }
+                }.value
+
+                job?.detail = "安装…"
+                let running = entry.installed.map { Scanner.isRunning(bundleId: $0.bundleId) } ?? false
+                if running, let current = entry.installed {
+                    let staged = try Installer.install(app, into: AKPaths.downloads.appendingPathComponent("stage-\(spec.id)"),
+                                                       expectedBundleId: spec.bundleId)
+                    try Installer.replaceWhileRunning(newApp: staged, target: current.path, relaunch: true)
+                } else {
+                    _ = try Installer.install(app, into: targetDirectory(),
+                                              backupTo: AKPaths.backups.appendingPathComponent(spec.name),
+                                              expectedBundleId: spec.bundleId)
+                }
+                job = nil
+                showToast("\(spec.name) 已重建并安装", ok: true)
+                noteBuild(entry, ok: true, text: "已安装")
+                await rescan()
+            } catch {
+                job = nil
+                noteBuild(entry, ok: false, text: String(error.localizedDescription.prefix(60)))
+                showToast(error.localizedDescription, ok: false)
+            }
+        }
+    }
+
+    // MARK: Dev 热重载
+
+    /// 按设置决定要不要盯源码目录
+    func startDevWatchIfNeeded() {
+        guard settings.devAutoRebuild else {
+            watcher?.stop()
+            watching = []
+            return
+        }
+        var roots: [String: URL] = [:]
+        for spec in effectiveManifest?.tools ?? [] {
+            if let src = spec.source {
+                roots[spec.id] = AKPaths.expand(src.path)
+            }
+        }
+        guard !roots.isEmpty else {
+            watching = []
+            return
+        }
+
+        if watcher == nil {
+            let w = DevWatcher()
+            w.onRebuild = { [weak self] id in
+                Task { @MainActor in
+                    guard let self, let e = self.entry(id), e.spec?.source != nil else { return }
+                    self.showToast("源码变了，重建 \(e.name)…", ok: true)
+                    self.rebuild(e)
+                }
+            }
+            watcher = w
+        }
+        watcher?.update(roots: roots)
+        watching = roots.keys.sorted()
+        watcher?.start()
+        AKLogInfo("dev", "热重载已开启，盯着 \(roots.count) 个源码目录")
+    }
+
+    var devWatchActive: Bool { watcher?.isRunning ?? false }
+
+    /// 重建成功后记一笔，界面显示「上次构建」
+    func noteBuild(_ entry: ToolEntry, ok: Bool, text: String) {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        lastBuild[entry.id] = "\(ok ? "✓" : "✗") \(f.string(from: Date())) \(text)"
+    }
+
+    // MARK: 体检
+
+    func runHealth(_ entry: ToolEntry) {
+        guard let app = entry.installed else { return }
+        Task {
+            let report = await Task.detached { Health.check(app) }.value
+            health[entry.id] = report
+            let size = await Task.detached { Scanner.directorySize(app.path) }.value
+            sizes[entry.id] = size
+        }
+    }
+
+    func runHealthAll() {
+        for e in entries where e.isInstalled { runHealth(e) }
+        showToast("正在体检 \(installedCount) 个工具…", ok: true)
+    }
+
+    // MARK: 打开
+
+    func open(_ entry: ToolEntry) {
+        guard let app = entry.installed else {
+            install(entry, isUpdate: false)
+            return
+        }
+        NSWorkspace.shared.openApplication(at: app.path, configuration: NSWorkspace.OpenConfiguration()) { _, err in
+            if let err { AKLogInfo("open", "\(err.localizedDescription)") }
+        }
+        usage.markOpened(entry.id)
+        usage.save()
+    }
+
+    func reveal(_ entry: ToolEntry) {
+        guard let app = entry.installed else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([app.path])
+    }
+
+    // MARK: 菜单栏下发
+
+    func invoke(toolId: String, itemId: String) {
+        server.invoke(toolId: toolId, itemId: itemId)
+        AKLogInfo("hub", "invoke \(toolId) → \(itemId)")
+    }
+
+    /// 事件总线：广播给订阅了该事件的工具
+    func emit(_ name: String, payload: [String: String] = [:], to toolId: String? = nil) {
+        server.emit(name, payload: payload, to: toolId)
+    }
+
+    func toolInfo(_ bundleId: String) -> AKToolInfo? { connected[bundleId] }
+
+    // MARK: 菜单栏布局
+    func toggleHidden(_ entry: ToolEntry) {
+        layout.setHidden(entry.id, !layout.isHidden(entry.id))
+        layout.save()
+        objectWillChange.send()
+    }
+
+    func move(_ entry: ToolEntry, to groupId: String) {
+        layout.assign(entry.id, to: groupId)
+        layout.save()
+        objectWillChange.send()
+    }
+
+    func addGroup(_ title: String) {
+        layout.groups.append(AKLayout.Group(id: UUID().uuidString.prefix(6).lowercased(), title: title))
+        layout.save()
+        objectWillChange.send()
+    }
+
+    func removeGroup(_ id: String) {
+        guard layout.groups.count > 1 else { return }
+        layout.groups.removeAll { $0.id == id }
+        layout.save()
+        objectWillChange.send()
+    }
+
+    // MARK: 设置
+
+    func updateSettings(_ mutate: (inout AKSettings) -> Void) {
+        let before = settings.devAutoRebuild
+        mutate(&settings)
+        settings.save()
+        objectWillChange.send()
+        if before != settings.devAutoRebuild {
+            startDevWatchIfNeeded()
+            showToast(settings.devAutoRebuild ? "热重载已开启" : "热重载已关闭", ok: true)
+        }
+    }
+
+    // MARK: 导入导出
+
+    func exportConfig() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "a-kit-config-\(Self.dateStamp()).json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let bundle = ConfigBundle(version: 1, exportedAt: Date(),
+                                  settings: settings, layout: layout, tools: entries.map { $0.id })
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            try enc.encode(bundle).write(to: url)
+            showToast("已导出到 \(url.lastPathComponent)", ok: true)
+        } catch {
+            showToast("导出失败：\(error.localizedDescription)", ok: false)
+        }
+    }
+
+    func importConfig() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let bundle = try JSONDecoder().decode(ConfigBundle.self, from: data)
+            settings = bundle.settings
+            settings.save()
+            layout = bundle.layout
+            layout.save()
+            showToast("配置已导入", ok: true)
+            Task { await rescan() }
+        } catch {
+            showToast("导入失败：\(error.localizedDescription)", ok: false)
+        }
+    }
+
+    struct ConfigBundle: Codable {
+        var version: Int
+        var exportedAt: Date
+        var settings: AKSettings
+        var layout: AKLayout
+        var tools: [String]
+    }
+
+    static func dateStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmm"
+        return f.string(from: Date())
+    }
+
+    // MARK: 提示
+
+    func showToast(_ text: String, ok: Bool) {
+        let t = Toast(text: text, ok: ok)
+        toast = t
+        Task {
+            try? await Task.sleep(nanoseconds: 3_200_000_000)
+            if toast?.id == t.id { toast = nil }
+        }
+    }
+
+    // MARK: 菜单栏菜单（原生模式 / 右键）
+
+    func menuItems(for tool: AKToolInfo, action: Selector, target: AnyObject) -> [NSMenuItem] {
+        func build(_ items: [AKMenuItem]) -> [NSMenuItem] {
+            items.map { item in
+                switch item.kind {
+                case .separator:
+                    return .separator()
+                case .header:
+                    let mi = NSMenuItem(title: item.title, action: nil, keyEquivalent: "")
+                    mi.isEnabled = false
+                    return mi
+                case .item, .toggle:
+                    let mi = NSMenuItem(title: item.title, action: action, keyEquivalent: "")
+                    mi.target = target
+                    mi.representedObject = [tool.bundleId, item.id]
+                    mi.isEnabled = item.enabled
+                    if item.kind == .toggle {
+                        mi.state = (item.checked ?? false) ? .on : .off
+                    }
+                    if let sub = item.children, !sub.isEmpty {
+                        let m = NSMenu()
+                        build(sub).forEach { m.addItem($0) }
+                        mi.submenu = m
+                    }
+                    return mi
+                }
+            }
+        }
+        return build(tool.menu)
+    }
+}

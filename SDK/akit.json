@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "mytool",
+  "name": "MyTool",
+  "tagline": "一句话说明这个工具干什么",
+  "bundleId": "com.example.MyTool",
+  "category": "tool",
+  "minOS": "13.0",
+  "asset": "MyTool-*.zip",
+  "statusBar": { "supported": true },
+  "icon": "https://raw.githubusercontent.com/owner/repo/main/icon.png",
+  "article": "https://askb.app/blog/mytool"
+}

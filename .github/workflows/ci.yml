@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift
+        run: swift --version
+
+      - name: Build
+        run: swift build --disable-sandbox
+
+      - name: Protocol selftest
+        run: ./.build/debug/AKitHub --selftest
+
+      - name: CLI smoke test
+        run: |
+          ./.build/debug/akit help
+          ./.build/debug/akit inspect not-a-url && exit 1 || true
+
+      - name: SDK 单文件与源码保持同步
+        run: diff -q Sources/AKitStatusKit/AKitStatusKit.swift SDK/AKitStatusKit.swift

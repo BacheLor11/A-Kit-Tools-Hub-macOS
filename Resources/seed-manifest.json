@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-21",
+  "tools": [
+    {
+      "id": "gtvmic",
+      "name": "GTVRemoteMic",
+      "tagline": "把 iPhone 当 Google TV 的麦克风用",
+      "bundleId": "com.aibao.GTVRemoteMic",
+      "category": "tool",
+      "statusBar": { "supported": true, "defaultVisible": true },
+      "channels": {
+        "stable": { "version": "1.0.5", "build": 6, "minOS": "13.0" }
+      },
+      "source": {
+        "type": "swiftpm",
+        "path": "/Volumes/askb-d/Agent-Projects/googletv-remote-mac-mic",
+        "appPath": "GTVRemoteMic.app"
+      }
+    },
+    {
+      "id": "passerby",
+      "name": "PasserbyGuard",
+      "tagline": "摄像头盯着门口，有人路过就提醒",
+      "bundleId": "com.passerbyguard.app",
+      "category": "tool",
+      "statusBar": { "supported": true, "defaultVisible": true },
+      "channels": {
+        "stable": { "version": "1.0.0", "minOS": "13.0" }
+      },
+      "source": {
+        "type": "swiftpm",
+        "path": "/Users/askb/Documents/Agent-Projects/Passer-by-Guard",
+        "appPath": "build/PasserbyGuard.app"
+      }
+    },
+    {
+      "id": "netpulse",
+      "name": "NetPulse",
+      "tagline": "菜单栏里的实时网速监控",
+      "bundleId": "com.aibao.NetPulse",
+      "category": "tool",
+      "repo": "BacheLor11/NetPulse",
+      "statusBar": { "supported": true, "defaultVisible": true },
+      "channels": {
+        "stable": { "version": "1.2.0", "build": 12, "minOS": "13.0" }
+      }
+    }
+  ]
+}
