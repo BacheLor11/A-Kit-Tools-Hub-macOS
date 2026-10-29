@@ -34,7 +34,14 @@ final class HubServer {
 
     func start() {
         AKPaths.ensure()
-        let path = AKPaths.socket.path
+        let path = ProcessInfo.processInfo.environment["AKIT_SOCKET_PATH"] ?? AKPaths.socket.path
+
+        // 已经有一个 Hub 在监听就绝不 unlink —— 否则会把活着的实例「断网」：
+        // 它的监听 fd 还开着，但文件已经指向别处，之后所有工具都连不上。
+        if Self.isLive(path) {
+            AKLogInfo("hub", "已有实例在监听 \(path)，本进程不接管")
+            return
+        }
         unlink(path)
 
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -94,6 +101,30 @@ final class HubServer {
     }
 
     // MARK: 接受连接
+
+    /// 这个 socket 路径上有没有活着的监听者（能 connect 上就说明有）
+    static func isLive(_ path: String) -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
+        path.withCString { cs in
+            withUnsafeMutablePointer(to: &addr.sun_path) { p in
+                p.withMemoryRebound(to: CChar.self, capacity: maxLen) { dst in
+                    _ = strlcpy(dst, cs, maxLen)
+                }
+            }
+        }
+        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let r = withUnsafePointer(to: &addr) { p -> Int32 in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sp in
+                Darwin.connect(fd, sp, size)
+            }
+        }
+        return r == 0
+    }
 
     private func acceptPending() {
         while true {

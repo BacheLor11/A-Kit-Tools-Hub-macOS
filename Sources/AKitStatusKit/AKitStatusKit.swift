@@ -70,6 +70,8 @@ final class AKHubSocket {
     var onClose: (() -> Void)?
 
     static var defaultPath: String {
+        // 自测 / 多实例时可用它指到别处，避免和正在跑的 Hub 抢同一个 socket
+        if let p = ProcessInfo.processInfo.environment["AKIT_SOCKET_PATH"], !p.isEmpty { return p }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("A-Kit/hub.sock").path
     }

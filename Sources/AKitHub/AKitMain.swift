@@ -48,6 +48,8 @@ struct AKitMain {
 
     /// 协议自测：起服务 → 客户端注册 → 服务端下发一次点击 → 校验客户端收到
     static func selfTest() {
+        // 自测用独立 socket：不能碰用户正在跑的那个 Hub
+        setenv("AKIT_SOCKET_PATH", NSTemporaryDirectory() + "akit-selftest-\(getpid()).sock", 1)
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let server = HubServer()
@@ -214,7 +216,7 @@ struct AKitMain {
         app.appearance = NSAppearance(named: .aqua)
         let isPanel = pageName == "panel"
         let isImport = pageName == "import"
-        let state = AppState(bootstrap: false)
+        let state = AppState(bootstrap: false, startServer: false)
         state.page = AppState.Page(rawValue: pageName) ?? .tools
 
         // 快照模式下可以用 AKIT_SCAN_DIRS 指定要扫的目录（冒号分隔），只影响这一次渲染

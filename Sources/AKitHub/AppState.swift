@@ -96,7 +96,7 @@ final class AppState: ObservableObject {
 
     // MARK: 初始化
 
-    init(bootstrap: Bool = true) {
+    init(bootstrap: Bool = true, startServer: Bool = true) {
         AKPaths.ensure()
         settings = AKSettings.load()
         layout = AKLayout.load()
@@ -116,7 +116,8 @@ final class AppState: ObservableObject {
                 self.connected[bundleId] = info
             }
         }
-        server.start()
+        // 快照 / 导出这类只读场景不监听：否则会跟真正在跑的实例抢 socket
+        if startServer { server.start() }
         listening = server.isListening
         AKLogInfo("app", "A-Kit 启动，socket \(AKPaths.socket.path)")
 
