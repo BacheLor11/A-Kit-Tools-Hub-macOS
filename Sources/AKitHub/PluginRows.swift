@@ -10,6 +10,7 @@ struct PluginOnlyRow: View {
     @Environment(\.ak) private var ak
     var entity: ToolEntity
     @State private var hovered = false
+    @State private var confirmRemove = false
 
     private var plugin: LoadedPlugin? { entity.plugin }
 
@@ -52,6 +53,24 @@ struct PluginOnlyRow: View {
                 }
                 Button("打开界面") { state.selectedId = entity.id }
                     .buttonStyle(AKPrimaryButtonStyle())
+                Menu {
+                    Button("详情") { state.selectedId = entity.id }
+                    Button("在访达中显示") {
+                        if let p = plugin {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [URL(fileURLWithPath: p.record.bundlePath)])
+                        }
+                    }
+                    Divider()
+                    Button("从 A-Kit 移出…", role: .destructive) { confirmRemove = true }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(ak.inkSoft)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 22)
             }
             .padding(.top, 1)
         }
@@ -59,6 +78,14 @@ struct PluginOnlyRow: View {
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .onTapGesture { state.selectedId = entity.id }
+        .confirmationDialog("把「\(entity.name)」移出 A-Kit？", isPresented: $confirmRemove) {
+            Button("移出（不动工具本体）", role: .destructive) {
+                if let plugin { state.removePlugin(plugin) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只会断开 A-Kit 这边的接入口；工具本体、插件文件都不删。重装工具后可以再接回来。")
+        }
     }
 }
 
@@ -68,6 +95,7 @@ struct PluginDetailSheet: View {
     @Environment(\.ak) private var ak
     var plugin: LoadedPlugin
     var entity: ToolEntity
+    @State private var confirmRemove = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,6 +105,15 @@ struct PluginDetailSheet: View {
         }
         .frame(width: 860, height: 580)
         .background(ak.bg)
+        .confirmationDialog("把「\(entity.name)」移出 A-Kit？", isPresented: $confirmRemove) {
+            Button("移出（不动工具本体）", role: .destructive) {
+                state.removePlugin(plugin)
+                state.selectedId = nil
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只会断开 A-Kit 这边的接入口；工具本体、插件文件都不删。")
+        }
     }
 
     private var header: some View {
@@ -99,6 +136,8 @@ struct PluginDetailSheet: View {
                     .font(AKFont.sans(11))
                     .foregroundColor(ak.inkSoft)
             }
+            Button("移出 A-Kit") { confirmRemove = true }
+                .buttonStyle(AKPrimaryButtonStyle(filled: false))
             Button("关闭") { state.selectedId = nil }
                 .buttonStyle(AKPrimaryButtonStyle(filled: false))
         }

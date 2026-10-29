@@ -85,6 +85,9 @@ final class AppState: ObservableObject {
     private var manifest: Manifest?
     /// 本机私有登记（tools.local.json），不进仓库、不在任何远端清单里
     private var localTools: [ToolSpec] = []
+    /// 本次运行里已经自动登记过的 bundleId，避免反复写盘
+    private var autoRegistered: Set<String> = []
+    private var autoRegisterTask: Task<Void, Never>?
     private let server = HubServer()
     private var watcher: DevWatcher?
     /// 插件宿主：扫描 Plugins/、dlopen、崩溃哨兵
@@ -246,13 +249,7 @@ final class AppState: ObservableObject {
     /// 把运行时工具正式登记进本机清单，下次启动也认得
     func registerTool(bundleId: String) {
         guard let info = connected[bundleId] else { return }
-        let spec = ToolSpec(id: Self.slug(from: info.bundleId, fallback: info.name),
-                            name: info.name,
-                            bundleId: info.bundleId,
-                            category: "tool",
-                            statusBar: StatusBarSpec(supported: true),
-                            channels: ["stable": ChannelSpec(version: info.version)])
-        if ManifestStore.registerLocal(spec) {
+        if ManifestStore.registerLocal(makeSpec(from: info)) {
             AKLogInfo("manifest", "登记本机工具 \(info.name) (\(info.bundleId))")
             showToast("已登记 \(info.name)", ok: true)
             Task {
@@ -261,6 +258,44 @@ final class AppState: ObservableObject {
             }
         } else {
             showToast("登记失败，检查 tools.local.json 的权限", ok: false)
+        }
+    }
+
+    /// 运行时信息 → 本机清单条目
+    private func makeSpec(from info: AKToolInfo) -> ToolSpec {
+        ToolSpec(id: Self.slug(from: info.bundleId, fallback: info.name),
+                 name: info.name,
+                 bundleId: info.bundleId,
+                 category: "tool",
+                 statusBar: StatusBarSpec(supported: true),
+                 channels: ["stable": ChannelSpec(version: info.version)])
+    }
+
+    /// 接进来的工具如果不在任何清单里，直接落盘登记。
+    ///
+    /// 这就是「工具退出后从工具页消失」的根因修复：以前只有运行期兜底条目，
+    /// 扫盘又只认清单里登记过的 bundleId，工具一退就什么都没了。
+    private func autoRegisterConnectedTools() {
+        guard settings.autoRegisterTools else { return }
+        let known = Set(entries.compactMap { $0.installed?.bundleId ?? $0.spec?.bundleId })
+        var wrote = false
+        for info in connected.values where !known.contains(info.bundleId) {
+            guard !autoRegistered.contains(info.bundleId) else { continue }
+            autoRegistered.insert(info.bundleId)
+            if ManifestStore.registerLocal(makeSpec(from: info)) {
+                wrote = true
+                AKLogInfo("manifest", "自动登记 \(info.name) (\(info.bundleId))")
+            }
+        }
+        guard wrote else { return }
+
+        // 合并写盘可能一次来好几个工具：去抖后只重扫一遍
+        autoRegisterTask?.cancel()
+        autoRegisterTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.loadManifest()
+            await self?.rescan()
         }
     }
 
@@ -382,6 +417,7 @@ final class AppState: ObservableObject {
         for t in server.connectedTools { map[t.bundleId] = t }
         connected = map
         rebuildRuntimeEntries()
+        autoRegisterConnectedTools()
         AKLogInfo("app", "connected=\(map.count) runtime=\(runtimeEntries.count)")
     }
 
@@ -725,14 +761,18 @@ final class AppState: ObservableObject {
     func toolInfo(_ bundleId: String) -> AKToolInfo? { connected[bundleId] }
 
     // MARK: 菜单栏布局
-    func toggleHidden(_ entry: ToolEntry) {
-        layout.setHidden(entry.id, !layout.isHidden(entry.id))
+    func toggleHidden(_ entry: ToolEntry) { toggleHidden(entry.id) }
+
+    func toggleHidden(_ id: String) {
+        layout.setHidden(id, !layout.isHidden(id))
         layout.save()
         objectWillChange.send()
     }
 
-    func move(_ entry: ToolEntry, to groupId: String) {
-        layout.assign(entry.id, to: groupId)
+    func move(_ entry: ToolEntry, to groupId: String) { move(entry.id, to: groupId) }
+
+    func move(_ id: String, to groupId: String) {
+        layout.assign(id, to: groupId)
         layout.save()
         objectWillChange.send()
     }
@@ -877,5 +917,19 @@ final class AppState: ObservableObject {
         layout.panelStyle = style.rawValue
         layout.save()
         objectWillChange.send()
+    }
+
+    /// 把插件移出 A-Kit：只断 A-Kit 这边的接入口，工具本体不动。
+    func removePlugin(_ plugin: LoadedPlugin) {
+        let result = pluginManager.remove(pluginId: plugin.id)
+        guard result.ok else {
+            showToast(result.message, ok: false)
+            return
+        }
+        layout.forget(plugin.id)
+        layout.save()
+        objectWillChange.send()
+        onLayoutChanged?()
+        showToast(result.message, ok: true)
     }
 }

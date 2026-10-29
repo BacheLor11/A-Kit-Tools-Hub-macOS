@@ -15,8 +15,13 @@ struct PanelView: View {
     var onSettings: () -> Void
 
     @State private var query = ""
-    /// 哪些插件卡片是展开的（点一下就切，暂时只在本次会话里记）
-    @State private var expanded: Set<String> = []
+    /// 哪些卡片是展开的（点一下就切，暂时只在本次会话里记）
+    /// 快照模式可用 AKIT_SNAPSHOT_EXPAND=<工具 id> 指定初始展开项，方便验证界面
+    @State private var expanded: Set<String> = {
+        guard let id = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_EXPAND"], !id.isEmpty
+        else { return [] }
+        return [id]
+    }()
     @State private var didPrimeExpansion = false
 
     private let cardWidth: CGFloat = 316
@@ -47,26 +52,31 @@ struct PanelView: View {
         VStack(spacing: 0) {
             header
             if totalCount > 4 { searchRow }
-                VStack(spacing: 6) {
-                    if cards.isEmpty {
-                        Text("没有显示中的工具")
-                            .font(AKFont.sans(12))
-                            .foregroundColor(ak.inkSoft)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 14)
-                            .padding(.horizontal, 14)
-                    }
+                // 必须能滚：展开的菜单可能有十几项，超过面板高度时被裁掉就会
+                // 出现「菜单显示不全」——这正是之前那个问题的直接原因之一。
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 6) {
+                        if cards.isEmpty {
+                            Text("没有显示中的工具")
+                                .font(AKFont.sans(12))
+                                .foregroundColor(ak.inkSoft)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 14)
+                                .padding(.horizontal, 14)
+                        }
 
-                    ForEach(cards) { entity in
-                        EntityCard(state: state,
-                                   entity: entity,
-                                   width: cardWidth,
-                                   expanded: expansionBinding(entity.id))
+                        ForEach(cards) { entity in
+                            EntityCard(state: state,
+                                       entity: entity,
+                                       width: cardWidth,
+                                       expanded: expansionBinding(entity.id),
+                                       onShowMenu: onShowMenu)
+                        }
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
-            .frame(maxHeight: 500, alignment: .top)
+                .frame(maxHeight: 520)
 
             footer
         }
@@ -91,8 +101,8 @@ struct PanelView: View {
         }
         guard !didPrimeExpansion else { return }
         didPrimeExpansion = true
-        // 用户配了「默认展开」的先摊开
-        for e in state.entities where state.layout.display(for: e.id) == .expanded && e.plugin != nil {
+        // 用户配了「默认展开」的先摊开（插件界面或老协议菜单都算）
+        for e in state.entities where state.layout.display(for: e.id) == .expanded {
             expanded.insert(e.id)
         }
         if expanded.isEmpty, let first = state.entities.first(where: { $0.plugin != nil }) {
