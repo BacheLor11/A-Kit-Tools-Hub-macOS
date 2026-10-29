@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AKitPluginKit
+import AKitStatusKit
 
 // MARK: - 把插件的 NSView 塞进 SwiftUI
 
@@ -46,21 +47,35 @@ struct EntityCard: View {
     var entity: ToolEntity
     let width: CGFloat
     @Binding var expanded: Bool
+    /// 面板里的「⋯」：弹出工具的原生菜单
+    var onShowMenu: (String) -> Void = { _ in }
     @Environment(\.ak) private var ak
     @State private var hovered = false
 
     private var plugin: LoadedPlugin? { entity.plugin }
-    private var canExpand: Bool { plugin != nil }
+    /// 老协议工具上报的菜单项（A-Key-Stats 这类）
+    private var legacyMenu: [AKMenuItem] { entity.legacy?.menu ?? [] }
+    /// 有插件界面，或者有可展示的菜单项，就能展开
+    private var canExpand: Bool { plugin != nil || !legacyMenu.isEmpty }
     private var innerWidth: CGFloat { width - 20 }
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            if expanded, let plugin {
+            if expanded {
                 Rectangle().fill(ak.border.opacity(0.5)).frame(height: 0.5)
-                PluginSurface(view: plugin.panelView(width: innerWidth))
-                    .frame(height: max(plugin.descriptor.panelHeight(width: innerWidth), 20))
-                    .padding(.vertical, 2)
+                if let plugin {
+                    PluginSurface(view: plugin.panelView(width: innerWidth))
+                        .frame(height: max(plugin.descriptor.panelHeight(width: innerWidth), 20))
+                        .padding(.vertical, 2)
+                } else if !legacyMenu.isEmpty {
+                    ToolMenuList(items: legacyMenu, dense: true) { itemId in
+                        if let bundleId = entity.legacy?.bundleId {
+                            state.invoke(toolId: bundleId, itemId: itemId)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
             }
         }
         .background(
@@ -95,6 +110,11 @@ struct EntityCard: View {
                                 .font(AKFont.sans(9))
                                 .foregroundColor(ak.inkSoft)
                         }
+                        if plugin == nil, !legacyMenu.isEmpty {
+                            Text("\(legacyMenu.filter { $0.kind != .separator }.count) 项")
+                                .font(AKFont.sans(9))
+                                .foregroundColor(ak.inkSoft.opacity(0.8))
+                        }
                     }
                     HStack(spacing: 4) {
                         Circle()
@@ -120,6 +140,19 @@ struct EntityCard: View {
                                 .stroke(ak.accent2.opacity(0.5), lineWidth: 0.5)
                         )
                         .help(reason)
+                }
+
+                if entity.legacy != nil, !legacyMenu.isEmpty {
+                    Button {
+                        onShowMenu(entity.id)
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(ak.inkSoft)
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .help("弹出原生菜单")
                 }
 
                 Image(systemName: canExpand ? (expanded ? "chevron.up" : "chevron.down") : "arrow.up.forward.app")

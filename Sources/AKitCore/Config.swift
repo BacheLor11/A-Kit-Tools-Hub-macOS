@@ -19,6 +19,8 @@ public struct AKSettings: Codable {
     public var devAutoRebuild: Bool
     /// 可选：GitHub Personal Access Token（只读 public_repo 就够），用于放宽 API 限流
     public var githubToken: String
+    /// 工具通过 SDK 连上来时，自动写进本机清单 —— 否则它一退出就从列表里消失
+    public var autoRegisterTools: Bool
 
     public static var `default`: AKSettings {
         AKSettings(
@@ -36,7 +38,8 @@ public struct AKSettings: Codable {
             blogBaseURL: "https://askb.app",
             thirdPartyHiding: false,
             devAutoRebuild: false,
-            githubToken: ""
+            githubToken: "",
+            autoRegisterTools: true
         )
     }
 
@@ -44,7 +47,8 @@ public struct AKSettings: Codable {
                 scanDirectories: [String], hotkey: String, launchAtLogin: Bool,
                 autoCheckUpdates: Bool, keepBackups: Int, channel: String,
                 showMenuBarIcon: Bool, showDockIcon: Bool, blogBaseURL: String,
-                thirdPartyHiding: Bool, devAutoRebuild: Bool, githubToken: String = "") {
+                thirdPartyHiding: Bool, devAutoRebuild: Bool, githubToken: String = "",
+                autoRegisterTools: Bool = true) {
         self.manifestURL = manifestURL
         self.installDirectory = installDirectory
         self.bundlePrefixes = bundlePrefixes
@@ -60,12 +64,14 @@ public struct AKSettings: Codable {
         self.thirdPartyHiding = thirdPartyHiding
         self.devAutoRebuild = devAutoRebuild
         self.githubToken = githubToken
+        self.autoRegisterTools = autoRegisterTools
     }
 
     enum CodingKeys: String, CodingKey {
         case manifestURL, installDirectory, bundlePrefixes, scanDirectories, hotkey
         case launchAtLogin, autoCheckUpdates, keepBackups, channel, showMenuBarIcon
         case showDockIcon, blogBaseURL, thirdPartyHiding, devAutoRebuild, githubToken
+        case autoRegisterTools
     }
 
     /// 宽容解码：旧版配置文件里没有的新字段一律回落到默认值，不会因为加字段就把设置全清空
@@ -93,6 +99,7 @@ public struct AKSettings: Codable {
         thirdPartyHiding = bool(.thirdPartyHiding, d.thirdPartyHiding)
         devAutoRebuild = bool(.devAutoRebuild, d.devAutoRebuild)
         githubToken = str(.githubToken, "")
+        autoRegisterTools = bool(.autoRegisterTools, d.autoRegisterTools)
     }
 
     public static func load() -> AKSettings {
@@ -274,6 +281,17 @@ public struct AKLayout: Codable {
     /// 按 layout 顺序摊平出要显示的工具 id
     public var visibleOrder: [String] {
         groups.flatMap { $0.items }.filter { !hidden.contains($0) }
+    }
+
+    /// 彻底忘掉一个 id：分组、隐藏、落点、面板形态全都清掉。
+    /// 用于「把插件移出 A-Kit」—— 否则 layout.json 里会留下指向已删插件的死条目。
+    public mutating func forget(_ id: String) {
+        hidden.removeAll { $0 == id }
+        for i in groups.indices {
+            groups[i].items.removeAll { $0 == id }
+        }
+        slot?.removeValue(forKey: id)
+        display?.removeValue(forKey: id)
     }
 }
 

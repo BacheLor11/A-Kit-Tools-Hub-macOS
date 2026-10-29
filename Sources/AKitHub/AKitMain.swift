@@ -22,6 +22,16 @@ struct AKitMain {
             return
         }
 
+        // 开发用：命令行把一个插件移出 A-Kit，等价于点界面上的「移出」
+        if let i = args.firstIndex(of: "--remove-plugin"), i + 1 < args.count {
+            _ = NSApplication.shared
+            let pm = PluginManager()
+            pm.boot()
+            let result = pm.remove(pluginId: args[i + 1])
+            print(result.ok ? "OK: \(result.message)" : "FAIL: \(result.message)")
+            exit(result.ok ? 0 : 1)
+        }
+
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let path = args[i + 1]
             let page = (i + 2 < args.count) ? args[i + 2] : "tools"
@@ -236,9 +246,35 @@ struct AKitMain {
         }
         print("snapshot: \(state.manifestLabel) · \(state.entries.count) 条 · 扫 \(state.settings.scanDirectories.count) 个目录")
 
+        // 开发用：塞一个假的在线工具，验证「菜单完整显示」而不必真的把工具跑起来。
+        // 只在设置 AKIT_SNAPSHOT_FAKE_TOOL 时生效，正常启动永远走不到这里。
+        if let fake = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_FAKE_TOOL"], !fake.isEmpty {
+            let info = AKToolInfo(
+                bundleId: "com.aibao.AKeyStats", name: "A-Key-Stats", version: "0.3.0",
+                status: "今日 8,412 次按键",
+                menu: [
+                    AKMenuItem(id: "open", title: "打开 A-Key-Stats"),
+                    AKMenuItem(id: "keyboard", title: "键盘热力"),
+                    AKMenuItem(id: "trackpad", title: "触控板"),
+                    AKMenuItem(id: "mouse", title: "鼠标"),
+                    AKMenuItem.header("更多"),
+                    AKMenuItem(id: "tester", title: "按键检测", shortcut: "⌘T"),
+                    AKMenuItem.separator("sep1"),
+                    AKMenuItem(id: "pause", title: "暂停记录", kind: .toggle, checked: true),
+                    AKMenuItem(id: "export", title: "导出 CSV…", enabled: false),
+                    AKMenuItem(id: "settings", title: "设置…", shortcut: "⌘,",
+                               children: [AKMenuItem(id: "settings.general", title: "通用"),
+                                          AKMenuItem(id: "settings.data", title: "数据")]),
+                ],
+                subscribes: ["netpulse.offline"])
+            state.connected = [info.bundleId: info]
+            state.rebuildRuntimeEntries()
+            state.layout.setDisplay(.expanded, for: info.bundleId)
+        }
+
         if isPanel {
-            let fit = host.fittingSize
-            host.frame = NSRect(x: 0, y: 0, width: width, height: fit.height)
+            // ScrollView 的 fittingSize 不反映内容高度，快照固定一个够高的画布
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 620)
         }
         host.layoutSubtreeIfNeeded()
 
@@ -395,32 +431,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(console)
         menu.addItem(.separator())
 
-        let tools = state.entries.filter { $0.isInstalled && !state.layout.isHidden($0.id) }
-        if tools.isEmpty {
+        // 用 entities 而不是 entries：插件工具、以及只靠 SDK 在线还没登记的工具，
+        // 以前在这份右键菜单里根本不会出现。
+        let shown = state.entities
+            .filter { $0.entry?.isInstalled == true || $0.plugin != nil || $0.legacy != nil }
+            .filter { !state.layout.isHidden($0.id) }
+
+        if shown.isEmpty {
             let none = NSMenuItem(title: "没有显示中的工具", action: nil, keyEquivalent: "")
             none.isEnabled = false
             menu.addItem(none)
         }
-        for entry in tools {
-            let bundleId = entry.installed?.bundleId ?? entry.id
-            let info = state.toolInfo(bundleId)
-            let title = info?.status.map { "\(entry.name) — \($0)" } ?? entry.name
+        for entity in shown {
+            let info = entity.legacy
+            let title = info?.status.map { "\(entity.name) — \($0)" } ?? entity.name
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.representedObject = entity.id
+
             if let info, !info.menu.isEmpty {
+                // 完整菜单：工具上报多少项就放多少项，分隔线 / 勾选 / 禁用都保留
                 let sub = NSMenu()
                 for mi in state.menuItems(for: info, action: #selector(invokeFromMenu(_:)), target: self) {
                     sub.addItem(mi)
                 }
                 sub.addItem(.separator())
-                let open = NSMenuItem(title: "打开 \(entry.name)", action: #selector(openToolFromMenu(_:)), keyEquivalent: "")
+                let open = NSMenuItem(title: "打开 \(entity.name)", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
                 open.target = self
-                open.representedObject = bundleId
+                open.representedObject = ["app", entity.id]
                 sub.addItem(open)
                 item.submenu = sub
+            } else if entity.plugin != nil {
+                let sub = NSMenu()
+                let open = NSMenuItem(title: "打开界面", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
+                open.target = self
+                open.representedObject = ["ui", entity.id]
+                sub.addItem(open)
+                if entity.entry?.isInstalled == true {
+                    let app = NSMenuItem(title: "打开 app", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
+                    app.target = self
+                    app.representedObject = ["app", entity.id]
+                    sub.addItem(app)
+                }
+                item.submenu = sub
             } else {
-                item.action = #selector(openToolFromMenu(_:))
+                item.action = #selector(openEntityFromMenu(_:))
                 item.target = self
-                item.representedObject = bundleId
+                item.representedObject = ["app", entity.id]
             }
             menu.addItem(item)
         }
@@ -445,10 +501,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         state.invoke(toolId: pair[0], itemId: pair[1])
     }
 
-    @objc private func openToolFromMenu(_ sender: NSMenuItem) {
-        guard let bundleId = sender.representedObject as? String,
-              let entry = state.entries.first(where: { ($0.installed?.bundleId ?? $0.id) == bundleId }) else { return }
-        state.open(entry)
+    /// 打开一个实体：`ui` → 控制台里的界面；`app` → 启动独立 app
+    @objc private func openEntityFromMenu(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        let kind = pair[0], id = pair[1]
+        guard let entity = state.entity(id) else { return }
+        if kind == "ui" || (entity.entry == nil && entity.plugin != nil) {
+            state.selectedId = entity.id
+            showWindow()
+        } else if let entry = entity.entry {
+            state.open(entry)
+        }
     }
 
     @objc private func checkUpdatesAction() {
@@ -491,7 +554,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(x: 0, y: 0, width: 336, height: 200)
         host.layoutSubtreeIfNeeded()
-        let height = min(max(host.fittingSize.height, 120), 580)
+        let height = min(max(host.fittingSize.height, 120), 620)
 
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 336, height: height),
                         styleMask: [.borderless, .nonactivatingPanel],
@@ -514,7 +577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let host = p.contentView else { return }
         host.frame = NSRect(x: 0, y: 0, width: 336, height: 200)
         host.layoutSubtreeIfNeeded()
-        let height = min(max(host.fittingSize.height, 120), 580)
+        let height = min(max(host.fittingSize.height, 120), 620)
         var frame = p.frame
         let top = frame.maxY
         frame.size.height = height

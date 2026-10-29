@@ -288,7 +288,7 @@ private struct ToolsPage: View {
                         AKHairline()
                         ForEach(visible) { entity in
                             if let entry = entity.entry {
-                                ToolRowView(entry: entry, form: entity.form)
+                                ToolRowView(entry: entry, form: entity.form, plugin: entity.plugin)
                             } else {
                                 PluginOnlyRow(entity: entity)
                             }
@@ -361,7 +361,10 @@ private struct ToolRowView: View {
     var entry: ToolEntry
     /// 这个工具的运行形态（双形态 / 独立 app / 老协议）。nil 时只按安装信息显示。
     var form: ToolEntity.Form? = nil
+    /// 双形态工具带的插件；有它就能「移出 A-Kit」
+    var plugin: LoadedPlugin? = nil
     @State private var hovered = false
+    @State private var confirmRemovePlugin = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 26) {
@@ -457,6 +460,16 @@ private struct ToolRowView: View {
                             state.selectedId = entry.id
                         }
                     }
+                    if let plugin {
+                        Divider()
+                        Button("在访达中显示插件") {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [URL(fileURLWithPath: plugin.record.bundlePath)])
+                        }
+                        Button("移出 A-Kit（不删工具）…", role: .destructive) {
+                            confirmRemovePlugin = true
+                        }
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 12, weight: .medium))
@@ -472,6 +485,14 @@ private struct ToolRowView: View {
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .onTapGesture { state.selectedId = entry.id }
+        .confirmationDialog("把「\(entry.name)」的插件移出 A-Kit？", isPresented: $confirmRemovePlugin) {
+            Button("移出（不动工具本体）", role: .destructive) {
+                if let plugin { state.removePlugin(plugin) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("工具本身继续可用，只是不再把界面接进 A-Kit。")
+        }
     }
 
     static let day: DateFormatter = {
@@ -607,51 +628,8 @@ private struct MenuBarPage: View {
 
                 VStack(spacing: 0) {
                     AKHairline()
-                    ForEach(state.entries.filter { $0.isInstalled }) { entry in
-                        HStack(spacing: 16) {
-                            Toggle("", isOn: Binding(
-                                get: { !state.layout.isHidden(entry.id) },
-                                set: { _ in state.toggleHidden(entry) }
-                            ))
-                            .toggleStyle(.switch)
-                            .tint(ak.accent)
-                            .labelsHidden()
-                            .scaleEffect(0.75)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.name)
-                                    .font(AKFont.sans(13, weight: .medium))
-                                    .foregroundColor(ak.ink)
-                                Text(state.isConnected(entry) ? "已接入 · 图标由 A-Kit 代管" : "未接入 · 使用自己的图标")
-                                    .font(AKFont.sans(11))
-                                    .foregroundColor(state.isConnected(entry) ? ak.accent : ak.inkSoft.opacity(0.75))
-                            }
-
-                            Spacer()
-
-                            Menu {
-                                ForEach(state.layout.groups) { g in
-                                    Button(g.title) { state.move(entry, to: g.id) }
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Text(state.layout.groups.first(where: { $0.items.contains(entry.id) })?.title ?? "未分组")
-                                        .font(AKFont.sans(11))
-                                        .foregroundColor(ak.inkSoft)
-                                    Image(systemName: "chevron.down")
-                                        .font(.system(size: 7, weight: .medium))
-                                        .foregroundColor(ak.inkSoft.opacity(0.7))
-                                }
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 4)
-                                .background(RoundedRectangle(cornerRadius: 6).fill(ak.bg))
-                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(ak.border, lineWidth: 0.5))
-                            }
-                            .menuStyle(.borderlessButton)
-                            .menuIndicator(.hidden)
-                            .fixedSize()
-                        }
-                        .padding(.vertical, 13)
+                    ForEach(state.entities.filter { $0.isInstalled || $0.legacy != nil }) { entity in
+                        MenuBarToolRow(entity: entity)
                         AKHairline()
                     }
                 }
@@ -803,6 +781,102 @@ private struct MenuBarPage: View {
         .padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 6).fill(ak.bg))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(ak.border, lineWidth: 0.5))
+    }
+}
+
+// MARK: - 菜单栏页的一行（含完整菜单）
+
+/// 菜单栏页里的一行：开关、归组，**以及这个工具上报的全部菜单项**。
+///
+/// 以前这页只列开关，工具到底有哪些菜单项根本看不见；
+/// 现在点「菜单 N 项」就地摊开，能直接点着下发，验证「接入后菜单完整」。
+private struct MenuBarToolRow: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.ak) private var ak
+    var entity: ToolEntity
+    @State private var showMenu = false
+
+    private var items: [AKMenuItem] { entity.legacy?.menu ?? [] }
+    private var visibleCount: Int { items.filter { $0.kind != .separator }.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 16) {
+                Toggle("", isOn: Binding(
+                    get: { !state.layout.isHidden(entity.id) },
+                    set: { _ in state.toggleHidden(entity.id) }
+                ))
+                .toggleStyle(.switch)
+                .tint(ak.accent)
+                .labelsHidden()
+                .scaleEffect(0.75)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entity.name)
+                        .font(AKFont.sans(13, weight: .medium))
+                        .foregroundColor(ak.ink)
+                    Text(statusLine)
+                        .font(AKFont.sans(11))
+                        .foregroundColor(entity.legacy != nil ? ak.accent : ak.inkSoft.opacity(0.75))
+                }
+
+                Spacer()
+
+                if !items.isEmpty {
+                    Button(showMenu ? "收起菜单" : "菜单 \(visibleCount) 项") {
+                        withAnimation(.easeOut(duration: 0.14)) { showMenu.toggle() }
+                    }
+                    .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                }
+
+                Menu {
+                    ForEach(state.layout.groups) { g in
+                        Button(g.title) { state.move(entity.id, to: g.id) }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(state.layout.groups.first(where: { $0.items.contains(entity.id) })?.title ?? "未分组")
+                            .font(AKFont.sans(11))
+                            .foregroundColor(ak.inkSoft)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .medium))
+                            .foregroundColor(ak.inkSoft.opacity(0.7))
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(ak.bg))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(ak.border, lineWidth: 0.5))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+
+            if showMenu, !items.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ToolMenuList(items: items) { itemId in
+                        if let bundleId = entity.legacy?.bundleId {
+                            state.invoke(toolId: bundleId, itemId: itemId)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(ak.surface.opacity(0.6)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(ak.border, lineWidth: 0.5))
+                .padding(.leading, 44)
+            }
+        }
+        .padding(.vertical, 13)
+    }
+
+    private var statusLine: String {
+        if entity.legacy != nil {
+            if let s = entity.legacy?.status, !s.isEmpty { return "已接入 · 菜单由 A-Kit 代显 · \(s)" }
+            return "已接入 · 菜单由 A-Kit 代显"
+        }
+        if entity.plugin != nil { return "插件形态 · \(entity.plugin?.record.id ?? "")" }
+        return "未接入 · 使用自己的图标"
     }
 }
 
@@ -1092,6 +1166,10 @@ private struct SettingsPage: View {
                     toggleRow("启动时检查更新", isOn: state.settings.autoCheckUpdates) { v in
                         state.updateSettings { $0.autoCheckUpdates = v }
                     }
+                    toggleRow("自动登记接入的工具", isOn: state.settings.autoRegisterTools) { v in
+                        state.updateSettings { $0.autoRegisterTools = v }
+                    }
+                    hint("工具通过 SDK 连上来时，自动写进本机清单 tools.local.json —— 这样它退出以后仍然留在工具页。关掉的话，只有运行时才看得到。")
                     toggleRow("显示菜单栏图标", isOn: state.settings.showMenuBarIcon) { v in
                         state.updateSettings { $0.showMenuBarIcon = v }
                         NotificationCenter.default.post(name: .akitMenuBarVisibilityChanged, object: nil)

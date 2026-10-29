@@ -239,6 +239,70 @@ final class PluginManager: NSObject, ObservableObject {
 
     // MARK: 启用 / 禁用
 
+    /// 移除结果：`ok=false` 时界面给红色提示，别假装成功
+    struct RemoveResult {
+        var ok: Bool
+        var message: String
+    }
+
+    /// 把一个插件移出 A-Kit。
+    ///
+    /// 只动 A-Kit 自己的 Plugins 目录里的那一条（通常是软链）：
+    /// - 软链 → 移到废纸篓，工具本体完全不动，重装工具后还能再接回来
+    /// - 实目录 → 移到废纸篓
+    ///
+    /// dlopen 过的代码不能真的 unload（它的 NSView 还活着），所以同时写进
+    /// `disabled`：本次运行不再出现，下次启动也不会再加载。
+    @discardableResult
+    func remove(pluginId: String) -> RemoveResult {
+        guard let p = plugin(id: pluginId) else {
+            return RemoveResult(ok: false, message: "这个插件已经不在了")
+        }
+        let fm = FileManager.default
+        var detail: String
+
+        if let entry = entryURL(for: p.record) {
+            let isLink = (try? entry.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
+            var trashed: NSURL?
+            do {
+                try fm.trashItem(at: entry, resultingItemURL: &trashed)
+                detail = isLink ? "软链已移到废纸篓，工具本体没动" : "插件包已移到废纸篓"
+            } catch {
+                // 废纸篓不可用（外置卷 / 权限）时：软链可以安全断开，实目录绝不硬删
+                if isLink, (try? fm.removeItem(at: entry)) != nil {
+                    detail = "软链已断开，工具本体没动"
+                } else {
+                    AKLogInfo("plugin", "移除 \(pluginId) 失败：\(error.localizedDescription)")
+                    return RemoveResult(ok: false, message: "移除失败：\(error.localizedDescription)")
+                }
+            }
+        } else {
+            detail = "没找到插件文件，只做了禁用"
+        }
+
+        disabled.insert(pluginId)
+        saveDisabled()
+        p.descriptor.deactivate()
+        plugins.removeAll { $0.record.id == pluginId }
+        objectWillChange.send()
+        AKLogInfo("plugin", "已移出 \(p.record.displayName)（\(detail)）")
+        return RemoveResult(ok: true, message: "已移出 A-Kit · \(p.record.displayName)（\(detail)）")
+    }
+
+    /// 插件在 Plugins 目录里的那一条（软链本身，不是解析后的真实路径）。
+    private func entryURL(for record: AKPluginRecord) -> URL? {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(at: AKPaths.plugins,
+                                                      includingPropertiesForKeys: nil,
+                                                      options: [.skipsHiddenFiles]) else { return nil }
+        let target = URL(fileURLWithPath: record.bundlePath).standardizedFileURL.path
+        for item in items where item.pathExtension == "akitplugin" {
+            if item.resolvingSymlinksInPath().standardizedFileURL.path == target { return item }
+        }
+        let name = URL(fileURLWithPath: record.bundlePath).lastPathComponent
+        return items.first { $0.lastPathComponent == name }
+    }
+
     func isDisabled(_ pluginId: String) -> Bool { disabled.contains(pluginId) }
 
     /// 工具正在独立运行时，用户点「接管」。
