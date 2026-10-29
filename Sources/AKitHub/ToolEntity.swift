@@ -54,6 +54,10 @@ struct ToolEntity: Identifiable {
     }
 
     var isInstalled: Bool { entry?.isInstalled == true }
+    /// 布局文件（layout.json 的分组 / 隐藏 / 落点）用的是 entry.id；
+    /// 实体主键是 bundleId。两者可能不同（com.aibao.AKeyStats vs akeystats），
+    /// 所有读写 layout 的地方都必须用这个，否则开关点了没反应。
+    var layoutId: String { entry?.id ?? id }
     /// 能在面板里展开完整界面
     var hasSurface: Bool { plugin != nil }
     var version: String? {

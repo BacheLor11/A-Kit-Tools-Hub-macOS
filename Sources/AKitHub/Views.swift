@@ -803,8 +803,8 @@ private struct MenuBarToolRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 16) {
                 Toggle("", isOn: Binding(
-                    get: { !state.layout.isHidden(entity.id) },
-                    set: { _ in state.toggleHidden(entity.id) }
+                    get: { !state.layout.isHidden(entity.layoutId) },
+                    set: { _ in state.toggleHidden(entity.layoutId) }
                 ))
                 .toggleStyle(.switch)
                 .tint(ak.accent)
@@ -831,11 +831,11 @@ private struct MenuBarToolRow: View {
 
                 Menu {
                     ForEach(state.layout.groups) { g in
-                        Button(g.title) { state.move(entity.id, to: g.id) }
+                        Button(g.title) { state.move(entity.layoutId, to: g.id) }
                     }
                 } label: {
                     HStack(spacing: 4) {
-                        Text(state.layout.groups.first(where: { $0.items.contains(entity.id) })?.title ?? "未分组")
+                        Text(state.layout.groups.first(where: { $0.items.contains(entity.layoutId) })?.title ?? "未分组")
                             .font(AKFont.sans(11))
                             .foregroundColor(ak.inkSoft)
                         Image(systemName: "chevron.down")
