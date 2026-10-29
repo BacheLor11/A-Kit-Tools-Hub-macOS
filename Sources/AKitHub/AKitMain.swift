@@ -226,12 +226,30 @@ struct AKitMain {
         }
         // 快照也要把插件带上，否则验证不到「工具自己的界面嵌进来」这条链路
         state.pluginManager.scanAndLoad()
-        // 快照模式可用 AKIT_SNAPSHOT_PLUGIN=<pluginId> 直接落到某个工具页
-        if let pid = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_PLUGIN"], !pid.isEmpty {
-            state.focusPluginId = pid
-            state.page = .plugin
-        }
         Task { await state.refreshAll() }
+
+        // 快照模式可用 AKIT_SNAPSHOT_PLUGIN=<pluginId> 直接出「工具独立窗口里的内容」。
+        // 现在工具不再是控制台里的一页，所以这里直接把它的 fullView 画出来，
+        // 尺寸按独立窗口的默认比例给。
+        if let pid = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_PLUGIN"], !pid.isEmpty {
+            guard let plugin = state.pluginManager.plugin(id: pid) else {
+                print("snapshot: 没有 id 为 \(pid) 的插件")
+                return
+            }
+            let v = plugin.fullView()
+            v.frame = NSRect(x: 0, y: 0, width: 1080, height: 720)
+            v.layoutSubtreeIfNeeded()
+            guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else {
+                print("snapshot: 无法创建位图")
+                return
+            }
+            v.cacheDisplay(in: v.bounds, to: rep)
+            if let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: path))
+                print("snapshot(plugin) → \(path) · \(plugin.record.displayName) \(plugin.record.version)")
+            }
+            return
+        }
 
         // 面板宽度跟运行时一致：取所有工具的需求最大值
         let panelWidth = min(max(336,
@@ -333,6 +351,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !FileManager.default.fileExists(atPath: AKPaths.settingsFile.path) {
             showWindow()
         }
+
+        // 调试钩子：AKIT_OPEN_WINDOW=<pluginId> 或 `--open-window <pluginId>`
+        // 启动后直接开某个工具窗口。给联调、截图和「从命令行唤起工具」用。
+        let args = CommandLine.arguments
+        let argId = args.firstIndex(of: "--open-window").flatMap { i -> String? in
+            i + 1 < args.count ? args[i + 1] : nil
+        }
+        if let pid = ProcessInfo.processInfo.environment["AKIT_OPEN_WINDOW"] ?? argId, !pid.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                self?.state.openPluginWindow(pid)
+            }
+        }
     }
 
     /// 加载插件。
@@ -345,9 +375,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pm.onPresentFull = { [weak self] pluginId in
             guard let self else { return }
             self.hidePanel()
-            // 插件要「打开完整界面」= 切到它的工具页，不再弹 sheet / 另开窗口
-            self.state.openPluginPage(pluginId)
-            self.showWindow()
+            // 插件要「打开完整界面」= 开它自己的独立窗口
+            self.state.openPluginWindow(pluginId)
         }
 
         statusProxy.onClick = { [weak self] pluginId in
@@ -393,7 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = Self.menuBarImage()
+            button.image = menuBarImage()
             button.imagePosition = .imageOnly
             button.target = self
             button.action = #selector(statusItemClicked(_:))
@@ -403,7 +432,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.isVisible = state.settings.showMenuBarIcon
     }
 
-    private static func menuBarImage() -> NSImage? {
+    /// 菜单栏图标。
+    ///
+    /// 尺寸读设置（默认 18pt = 系统标准）。以前写死 18，用户想调大没处下手；
+    /// 而「位置移动」其实是左边多了两个插件占位，不是图标自己变了 ——
+    /// 插件默认不再占菜单栏（`AKLayout.slot(for:)` 现在默认 board）之后，
+    /// A-Kit 的图标就回到原位了。
+    private func menuBarImage() -> NSImage? {
+        let side = CGFloat(state.settings.menuBarIconSize)
         let candidates = [
             Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png"),
             Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/MenuBarIcon.png"),
@@ -411,7 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for url in candidates {
             if let img = NSImage(contentsOf: url) {
                 img.isTemplate = true
-                img.size = NSSize(width: 18, height: 18)
+                img.size = NSSize(width: side, height: side)
                 return img
             }
         }
@@ -479,7 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 item.submenu = sub
             } else if entity.plugin != nil {
                 let sub = NSMenu()
-                let open = NSMenuItem(title: "打开工具页", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
+                let open = NSMenuItem(title: "打开窗口", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
                 open.target = self
                 open.representedObject = ["ui", entity.id]
                 sub.addItem(open)
@@ -518,14 +554,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         state.invoke(toolId: pair[0], itemId: pair[1])
     }
 
-    /// 打开一个实体：`ui` → 它的工具页；`app` → 启动独立 app
+    /// 打开一个实体：`ui` → 它的独立窗口；`app` → 启动独立 app
     @objc private func openEntityFromMenu(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
         let kind = pair[0], id = pair[1]
         guard let entity = state.entity(id) else { return }
         if let plugin = entity.plugin, kind == "ui" || entity.entry == nil {
-            state.openPluginPage(plugin.id)
-            showWindow()
+            state.openPluginWindow(plugin.id)
         } else if let entry = entity.entry {
             state.open(entry)
         }
@@ -575,8 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             },
             onOpenPage: { [weak self] pluginId in
                 self?.hidePanel()
-                self?.state.openPluginPage(pluginId)
-                self?.showWindow()
+                self?.state.openPluginWindow(pluginId)
             },
             onQuit: { NSApp.terminate(nil) },
             onSettings: { [weak self] in
@@ -761,6 +795,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NotificationCenter.default.addObserver(forName: .akitDockVisibilityChanged, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.applyDockPolicy() }
+        }
+        NotificationCenter.default.addObserver(forName: .akitMenuBarIconSizeChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let button = self.statusItem?.button else { return }
+                button.image = self.menuBarImage()
+            }
         }
     }
 

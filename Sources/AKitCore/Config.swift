@@ -21,6 +21,8 @@ public struct AKSettings: Codable {
     public var githubToken: String
     /// 工具通过 SDK 连上来时，自动写进本机清单 —— 否则它一退出就从列表里消失
     public var autoRegisterTools: Bool
+    /// 菜单栏图标画多大（pt）。系统标准是 18，觉得小可以调到 20/22。
+    public var menuBarIconSize: Double
 
     public static var `default`: AKSettings {
         AKSettings(
@@ -39,7 +41,8 @@ public struct AKSettings: Codable {
             thirdPartyHiding: false,
             devAutoRebuild: false,
             githubToken: "",
-            autoRegisterTools: true
+            autoRegisterTools: true,
+            menuBarIconSize: 18
         )
     }
 
@@ -48,7 +51,7 @@ public struct AKSettings: Codable {
                 autoCheckUpdates: Bool, keepBackups: Int, channel: String,
                 showMenuBarIcon: Bool, showDockIcon: Bool, blogBaseURL: String,
                 thirdPartyHiding: Bool, devAutoRebuild: Bool, githubToken: String = "",
-                autoRegisterTools: Bool = true) {
+                autoRegisterTools: Bool = true, menuBarIconSize: Double = 18) {
         self.manifestURL = manifestURL
         self.installDirectory = installDirectory
         self.bundlePrefixes = bundlePrefixes
@@ -65,13 +68,14 @@ public struct AKSettings: Codable {
         self.devAutoRebuild = devAutoRebuild
         self.githubToken = githubToken
         self.autoRegisterTools = autoRegisterTools
+        self.menuBarIconSize = menuBarIconSize
     }
 
     enum CodingKeys: String, CodingKey {
         case manifestURL, installDirectory, bundlePrefixes, scanDirectories, hotkey
         case launchAtLogin, autoCheckUpdates, keepBackups, channel, showMenuBarIcon
         case showDockIcon, blogBaseURL, thirdPartyHiding, devAutoRebuild, githubToken
-        case autoRegisterTools
+        case autoRegisterTools, menuBarIconSize
     }
 
     /// 宽容解码：旧版配置文件里没有的新字段一律回落到默认值，不会因为加字段就把设置全清空
@@ -100,6 +104,7 @@ public struct AKSettings: Codable {
         devAutoRebuild = bool(.devAutoRebuild, d.devAutoRebuild)
         githubToken = str(.githubToken, "")
         autoRegisterTools = bool(.autoRegisterTools, d.autoRegisterTools)
+        menuBarIconSize = (try? c.decodeIfPresent(Double.self, forKey: .menuBarIconSize)) ?? d.menuBarIconSize
     }
 
     public static func load() -> AKSettings {
@@ -217,8 +222,13 @@ public struct AKLayout: Codable {
         }
     }
 
+    /// 默认落点是 `board`（只进 A-Kit 面板），**不是** `hubbar`。
+    ///
+    /// 以前默认 hubbar，装一个插件就在系统菜单栏多一格图标 ——
+    /// 用户装完看到菜单栏凭空多出几个方块，第一反应是「这什么鬼」。
+    /// 想让它上菜单栏，用户自己在「菜单栏」页显式开启。
     public func slot(for pluginId: String) -> Slot {
-        Slot(rawValue: slot?[pluginId] ?? "") ?? .hubbar
+        Slot(rawValue: slot?[pluginId] ?? "") ?? .board
     }
 
     public mutating func setSlot(_ value: Slot, for pluginId: String) {

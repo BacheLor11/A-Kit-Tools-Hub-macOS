@@ -119,11 +119,11 @@ Scripts/package-plugin.sh .build/release/libMyToolPlugin.dylib dist \
 | `pluginId` | 唯一标识，建议用 bundle id |
 | `displayName` / `version` | 显示用 |
 | `abiVersion` | 必须返回 `AKPluginABIVersion`，否则宿主拒绝加载 |
-| `statusItemImage()` | 菜单栏图标（模板图 18×18），`hubbar` 模式下宿主用它画图标 |
+| `statusItemImage()` | 菜单栏图标，`hubbar` 模式下宿主用它画。返回彩色 app 图标也行，宿主不再强制模板化。默认落点是 `board`（不占菜单栏） |
 | `makePanelView(width:)` | **窄界面**，面板里的卡片 |
 | `panelHeight(width:)` | 上面那个界面的高度 |
 | `makePopoverView(width:)` | 可选，点菜单栏图标直接弹的界面；返回 nil 就复用 panel |
-| `makeFullView()` | **宽界面**，控制台里的整页 |
+| `makeFullView()` | **宽界面**，工具独立窗口里装的就是它 |
 | `preferredPanelWidth()` | 可选，你的面板最少要多宽。宿主取所有工具的最大值，不实现就按 336 |
 | `statusText()` | 折叠态那一行字 |
 | `activate()` / `deactivate()` | 生命周期 |
