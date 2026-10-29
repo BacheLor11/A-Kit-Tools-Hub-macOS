@@ -437,7 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // 以前在这份右键菜单里根本不会出现。
         let shown = state.entities
             .filter { $0.entry?.isInstalled == true || $0.plugin != nil || $0.legacy != nil }
-            .filter { !state.layout.isHidden($0.id) }
+            .filter { !state.layout.isHidden($0.layoutId) }
 
         if shown.isEmpty {
             let none = NSMenuItem(title: "没有显示中的工具", action: nil, keyEquivalent: "")

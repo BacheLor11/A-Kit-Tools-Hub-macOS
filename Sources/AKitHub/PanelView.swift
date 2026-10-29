@@ -36,7 +36,7 @@ struct PanelView: View {
         var list = state.entities.filter {
             $0.isInstalled || $0.plugin != nil || $0.legacy != nil
         }
-        list = list.filter { state.layout.display(for: $0.id) != .hidden }
+        list = list.filter { state.layout.display(for: $0.layoutId) != .hidden }
         guard !query.isEmpty else { return list }
         let q = query.lowercased()
         return list.filter { $0.name.lowercased().contains(q) }
@@ -102,7 +102,7 @@ struct PanelView: View {
         guard !didPrimeExpansion else { return }
         didPrimeExpansion = true
         // 用户配了「默认展开」的先摊开（插件界面或老协议菜单都算）
-        for e in state.entities where state.layout.display(for: e.id) == .expanded {
+        for e in state.entities where state.layout.display(for: e.layoutId) == .expanded {
             expanded.insert(e.id)
         }
         if expanded.isEmpty, let first = state.entities.first(where: { $0.plugin != nil }) {
