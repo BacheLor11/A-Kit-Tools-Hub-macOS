@@ -73,6 +73,8 @@ final class AppState: ObservableObject {
     @Published var focusPluginId: String?
     /// 落点 / 排布变了，需要重建菜单栏代持
     var onLayoutChanged: (() -> Void)?
+    /// 外部（socket / 脚本）要求弹收面板，由 AppDelegate 接
+    var onTogglePanel: (() -> Void)?
     @Published var listening = false
 
     // GitHub 安装
@@ -143,6 +145,9 @@ final class AppState: ObservableObject {
         // 外部（脚本 / 别的工具）要求打开某个工具的独立窗口
         server.onOpenPluginWindow = { [weak self] pid in
             self?.openPluginWindow(pid)
+        }
+        server.onTogglePanel = { [weak self] in
+            self?.onTogglePanel?()
         }
 
         guard bootstrap else { return }
@@ -975,6 +980,15 @@ final class AppState: ObservableObject {
         guard let plugin = pluginManager.plugin(id: pluginId) else {
             showToast("这个工具没有可打开的界面（可能是纯 app 形态）", ok: false)
             return
+        }
+        // 它的独立 app 还开着：先请它退出，让 A-Kit 接管。
+        //
+        // 不然就会出现「A-Kit 里开了一个窗口，菜单栏里还杵着同一个工具的图标」——
+        // 用户要的是工具作为 A-Kit 的窗口存在，不是两份并存。
+        // terminate() 等于替用户按 ⌘Q，是温和退出，不会硬杀。
+        if plugin.inactiveReason != nil {
+            showToast("正在让 \(plugin.record.displayName) 的独立进程退出，由 A-Kit 接管…", ok: true)
+            pluginManager.takeOver(pluginId: pluginId)
         }
         PluginWindows.shared.show(plugin)
     }

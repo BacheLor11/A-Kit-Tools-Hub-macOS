@@ -213,7 +213,9 @@ struct AKitMain {
 
     static func renderSnapshot(to path: String, pageName: String) {        let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        app.appearance = NSAppearance(named: .aqua)
+        // 快照强制一个 appearance：AKIT_SNAPSHOT_DARK=1 出深色，方便对比两边是否同步
+        let dark = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_DARK"] == "1"
+        app.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         let isPanel = pageName == "panel"
         let isImport = pageName == "import"
         let state = AppState(bootstrap: false, startServer: false)
@@ -251,19 +253,22 @@ struct AKitMain {
             return
         }
 
-        // 面板宽度跟运行时一致：取所有工具的需求最大值
-        let panelWidth = min(max(336,
-            state.pluginManager.plugins.compactMap { $0.descriptor.preferredPanelWidth?() }.max() ?? 0), 620)
+        // 面板尺寸跟运行时一致：固定宽高，左栏 + 右栏
+        let asked = state.pluginManager.plugins
+            .compactMap { $0.descriptor.preferredPanelWidth?() }.max() ?? 0
+        let panelWidth = min(max(640, asked + 186 + 52), 860)
+        let panelHeight = min(620, max(440, (NSScreen.main?.visibleFrame.height ?? 900) - 200))
         let width: CGFloat = isPanel ? panelWidth : (isImport ? 640 : 1080)
         let root: AnyView = isPanel
             ? AnyView(PanelView(onOpenConsole: {}, onShowMenu: { _ in }, onQuit: {}, onSettings: {},
-                                width: panelWidth)
+                                width: panelWidth, height: panelHeight)
                 .environmentObject(state))
             : isImport
             ? AnyView(ImportSheet().environmentObject(state).frame(width: 640, height: 540))
             : AnyView(RootView().environmentObject(state).frame(width: width, height: 720))
         let host = NSHostingView(rootView: root)
-        host.frame = NSRect(x: 0, y: 0, width: width, height: isPanel ? 200 : (isImport ? 540 : 720))
+        host.frame = NSRect(x: 0, y: 0, width: width,
+                            height: isPanel ? panelHeight : (isImport ? 540 : 720))
         host.layoutSubtreeIfNeeded()
 
         // 让异步扫描 / 清单加载跑完
@@ -300,13 +305,7 @@ struct AKitMain {
             state.layout.setDisplay(.expanded, for: info.bundleId)
         }
 
-        if isPanel {
-            // 面板改成宽高自适应之后，快照也按内容自然高度出图，
-            // 这样截出来的就是用户真正看到的那个面板，而不是一块带空白的画布。
-            host.layoutSubtreeIfNeeded()
-            let h = max(host.fittingSize.height, 160)
-            host.frame = NSRect(x: 0, y: 0, width: width, height: h)
-        }
+        // 面板现在是固定尺寸，快照直接按窗口真实大小出图
         host.layoutSubtreeIfNeeded()
 
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
@@ -328,8 +327,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var panel: NSPanel?
     /// 建面板时用的宽度（插件增减会改变需求宽度，届时重建）
     private var panelBuiltWidth: CGFloat = 0
-    /// 合并连续的内容尺寸变化，别一帧里 resize 好几次
-    private var panelResizeWork: DispatchWorkItem?
     private var window: NSWindow?
     /// 菜单栏代持：把配成 hubbar 的插件图标画在系统菜单栏上
     private let statusProxy = StatusItemProxy()
@@ -388,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.showPanel()
         }
 
+        state.onTogglePanel = { [weak self] in self?.togglePanel() }
         state.onLayoutChanged = { [weak self] in
             self?.statusProxy.invalidate()
             self?.syncPluginBars()
@@ -585,20 +583,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: 面板
 
-    /// 面板宽度 = 所有工具的需求最大值，最小 336。
+    /// 面板宽度 = 左栏 + 右栏内容需求。
     ///
-    /// 宽度不能写死：A-Key-Stats 的面板本身要 346，A-Sweep 要 356，
-    /// 宿主给窄了插件界面就被裁（以前固定 336，两边必然差 10~20pt）。
+    /// 宽度也只在「装了新插件、它要求更宽」时才变，日常不会跳。
+    /// 高度是固定的（见 `preferredPanelHeight`）—— 不再跟着卡片展开长高。
     private var preferredPanelWidth: CGFloat {
         let asked = state.pluginManager.plugins
             .compactMap { $0.descriptor.preferredPanelWidth?() }
             .max() ?? 0
-        return min(max(336, asked), 620)
+        // 186 左栏 + 24 右栏外边距 + 卡片左右内边距
+        return min(max(640, asked + 186 + 52), 860)
+    }
+
+    /// 面板高度：固定，取屏幕可用高度的一个舒适区间，弹出后不再变
+    private var preferredPanelHeight: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        return min(620, max(440, visible - 200))
     }
 
     private func makePanel() -> NSPanel {
-        let width = preferredPanelWidth
-        panelBuiltWidth = width
+        let size = NSSize(width: preferredPanelWidth, height: preferredPanelHeight)
+        panelBuiltWidth = size.width
 
         let view = PanelView(
             onOpenConsole: { [weak self] in
@@ -618,19 +623,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.state.page = .settings
                 self?.showWindow()
             },
-            width: width,
-            onLayoutChange: { [weak self] in
-                self?.schedulePanelResize()
-            }
+            width: size.width,
+            height: size.height
         )
         .environmentObject(state)
 
         let host = NSHostingView(rootView: view)
-        host.frame = NSRect(x: 0, y: 0, width: width, height: 200)
-        host.layoutSubtreeIfNeeded()
-        let height = clampedHeight(host.fittingSize.height)
+        host.frame = NSRect(origin: .zero, size: size)
 
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+        let p = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         p.isFloatingPanel = true
@@ -641,42 +642,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         p.hasShadow = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
         p.contentView = host
         return p
-    }
-
-    /// 面板高度上限：屏幕可用高度减掉一点余量，别顶到屏幕外
-    private func clampedHeight(_ h: CGFloat) -> CGFloat {
-        let visible = NSScreen.main?.visibleFrame.height ?? 900
-        return min(max(h, 120), max(320, visible - 40))
-    }
-
-    /// 内容尺寸变了就重新贴合（同一轮布局里可能连发几次，合并一下）
-    private func schedulePanelResize() {
-        panelResizeWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, let p = self.panel, p.isVisible else { return }
-            self.resizePanelToFit(p)
-        }
-        panelResizeWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
-    }
-
-    /// 工具数量 / 内容高度变化时重新贴合
-    private func resizePanelToFit(_ p: NSPanel) {
-        guard let host = p.contentView else { return }
-        let width = p.frame.width
-        host.frame = NSRect(x: 0, y: 0, width: width, height: 200)
-        host.layoutSubtreeIfNeeded()
-        let height = clampedHeight(host.fittingSize.height)
-        guard abs(height - p.frame.height) > 0.5 else { return }
-        var frame = p.frame
-        let top = frame.maxY
-        frame.size.height = height
-        frame.origin.y = top - height
-        p.setFrame(frame, display: true)
-        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
     }
 
     private func togglePanel() {
@@ -695,17 +662,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel?.orderOut(nil)
             panel = nil
         }
+        // 高度固定，宽度只在插件需求变化时重建 —— 正常弹出不做任何 setFrame，
+        // 面板位置自然就不会跳
         if panel == nil { panel = makePanel() }
         guard let p = panel else { return }
-        resizePanelToFit(p)
         positionPanel(p)
-        p.orderFrontRegardless()
+        if !p.isVisible {
+            // 淡入 + 轻微下滑：系统 popover 就是这么出来的，
+            // 直接 orderFront 会显得很生硬
+            p.alphaValue = 0
+            p.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.16
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                p.animator().alphaValue = 1
+            }
+        } else {
+            p.orderFrontRegardless()
+        }
         p.makeKey()
         installClickMonitor()
     }
 
     private func hidePanel() {
-        panel?.orderOut(nil)
+        if let p = panel, p.isVisible {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.11
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                p.animator().alphaValue = 0
+            }, completionHandler: { [weak p] in
+                p?.orderOut(nil)
+                p?.alphaValue = 1
+            })
+        }
         if let m = globalClickMonitor { NSEvent.removeMonitor(m); globalClickMonitor = nil }
         if let m = localKeyMonitor { NSEvent.removeMonitor(m); localKeyMonitor = nil }
     }

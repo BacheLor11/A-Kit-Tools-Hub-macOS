@@ -23,6 +23,8 @@ final class HubServer {
     var onStatusChanged: ((_ bundleId: String, _ status: String) -> Void)?
     /// 外部要求打开某个工具的独立窗口（`openWindow` 方法）
     var onOpenPluginWindow: ((String) -> Void)?
+    /// 外部要求弹出 / 收起面板（`togglePanel` 方法）
+    var onTogglePanel: (() -> Void)?
     /// 某个工具发来事件（用于界面展示 / 转发）
     var onEvent: ((_ name: String, _ payload: [String: String], _ from: String?) -> Void)?
 
@@ -222,6 +224,11 @@ final class HubServer {
                   let pid = params["pluginId"] as? String, !pid.isEmpty else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.onOpenPluginWindow?(pid)
+            }
+        case "togglePanel":
+            // 让宿主弹 / 收面板，脚本和快捷键都能用
+            DispatchQueue.main.async { [weak self] in
+                self?.onTogglePanel?()
             }
         default:
             break
