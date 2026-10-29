@@ -38,6 +38,36 @@ public enum PluginInstallBridge {
         return made
     }
 
+    /// 幂等版本：已经指向同一路径的软链原样保留，只补缺的。
+    ///
+    /// 每次启动扫描完都调一次 —— 用户可能是把 app 手动拖进 /Applications 装的，
+    /// 没走 A-Kit 的安装流程，插件就不会自动进 Plugins 目录。
+    @discardableResult
+    public static func ensure(from app: URL, into pluginsDir: URL) throws -> [URL] {
+        let found = pluginsInside(app: app)
+        guard !found.isEmpty else { return [] }
+        try FileManager.default.createDirectory(at: pluginsDir, withIntermediateDirectories: true)
+
+        let fm = FileManager.default
+        var made: [URL] = []
+        for plugin in found {
+            let link = pluginsDir.appendingPathComponent(plugin.lastPathComponent)
+            if let dest = try? fm.destinationOfSymbolicLink(atPath: link.path) {
+                let resolved = dest.hasPrefix("/")
+                    ? URL(fileURLWithPath: dest)
+                    : pluginsDir.appendingPathComponent(dest)
+                if resolved.standardizedFileURL.path == plugin.standardizedFileURL.path { continue }
+            }
+            if fm.fileExists(atPath: link.path)
+                || (try? link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                try? fm.removeItem(at: link)
+            }
+            try fm.createSymbolicLink(at: link, withDestinationURL: plugin)
+            made.append(link)
+        }
+        return made
+    }
+
     /// 卸载工具时把它的插件软链也拔掉。
     ///
     /// 只删**指向这个 app 的软链**，别人装的插件不动。

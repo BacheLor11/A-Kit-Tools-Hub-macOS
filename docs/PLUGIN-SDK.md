@@ -124,6 +124,7 @@ Scripts/package-plugin.sh .build/release/libMyToolPlugin.dylib dist \
 | `panelHeight(width:)` | 上面那个界面的高度 |
 | `makePopoverView(width:)` | 可选，点菜单栏图标直接弹的界面；返回 nil 就复用 panel |
 | `makeFullView()` | **宽界面**，控制台里的整页 |
+| `preferredPanelWidth()` | 可选，你的面板最少要多宽。宿主取所有工具的最大值，不实现就按 336 |
 | `statusText()` | 折叠态那一行字 |
 | `activate()` / `deactivate()` | 生命周期 |
 
@@ -193,6 +194,45 @@ guard lock.tryAcquire() else {
 | 只有 A-Kit | 插件拿锁，激活 |
 | app 先跑，A-Kit 后启动 | 插件拿不到锁 → 面板显示「正在独立运行」+「接管」按钮 |
 | A-Kit 先跑，用户双击 app | app 拿不到锁 → 请求 Hub 弹出面板 → 自己退出 |
+
+### 3.3 工具页：`makeFullView()` 长什么样
+
+A-Kit 0.5.4 起，`makeFullView()` 不是弹窗、不是 sheet，而是**控制台侧栏里的一个页面**：
+装一个插件就多一页，点进去是工具自己的完整界面，跟 A-Kit 一起开关、一起退出。
+这就是「工具不再作为独立 app 在程序坞里占一个图标」的落点。
+
+插件里想让用户跳过来，调 `host.presentFullPanel(pluginId)` —— 不要自己开窗口。
+
+### 3.4 三个只在插件形态下才会踩的坑
+
+**① 偏好设置要显式指定 suite。**
+`UserDefaults.standard` 的域由**进程**的 bundle id 决定。插件跑在 A-Kit 里，
+`.standard` 会写到 A-Kit 的域去 —— 用户在独立 app 里设的东西，插件里全部读不到。
+
+```swift
+public enum MyPrefs {
+    public static let shared = UserDefaults(suiteName: "com.example.MyTool") ?? .standard
+}
+```
+
+域就是工具自己的 bundle id，所以独立 app 那边不用迁移，两边天然是同一份。
+
+**② 不要用 `Bundle.main` 找自己的资源。**
+插件里 `Bundle.main` 是 **A-Kit**：找不到你的 toolchain / 图标 / 版本号，
+「别把自己卸了」的保护还会保护错对象。用 `dladdr` 从自己的镜像往上找 `.app`：
+
+```swift
+var info = Dl_info()
+dladdr(#dsohandle, &info)
+var url = URL(fileURLWithPath: String(cString: info.dli_fname))
+while url.pathExtension != "app", url.path != "/" { url = url.deletingLastPathComponent() }
+// url 就是装着自己的那个 .app（app 内置插件和裸插件都能找到正确的层级）
+```
+
+**③ 权限记在宿主账上。**
+TCC 认进程不认 dylib。插件要「输入监控 / 完全磁盘访问 / 辅助功能」，
+用户得在系统设置里勾 **A-Kit**，独立 app 那份授权不会自动惠及插件。
+宿主 Info.plist 里对应的 `NS*UsageDescription` 也要写，否则弹窗没文案。
 
 ---
 

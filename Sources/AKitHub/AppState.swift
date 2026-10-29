@@ -11,7 +11,17 @@ final class AppState: ObservableObject {
 
     enum Page: String, CaseIterable, Identifiable {
         case tools, updates, menuBar, thirdParty, settings
+        /// 工具自己的整页界面（插件形态才有）。
+        ///
+        /// 不放进 `allCases`：它不是一个固定页签，而是「每装一个插件就多一页」，
+        /// 具体是哪一页由 `focusPluginId` 决定，侧栏单独列。
+        case plugin
+
         var id: String { rawValue }
+
+        /// 侧栏固定页签（`.plugin` 由侧栏动态补）
+        static var fixed: [Page] { [.tools, .updates, .menuBar, .thirdParty, .settings] }
+
         var title: String {
             switch self {
             case .tools: return "工具"
@@ -19,6 +29,7 @@ final class AppState: ObservableObject {
             case .menuBar: return "菜单栏"
             case .thirdParty: return "第三方"
             case .settings: return "设置"
+            case .plugin: return "工具页"
             }
         }
         var symbol: String {
@@ -28,6 +39,7 @@ final class AppState: ObservableObject {
             case .menuBar: return "menubar.rectangle"
             case .thirdParty: return "app.badge.checkmark"
             case .settings: return "slider.horizontal.3"
+            case .plugin: return "macwindow"
             }
         }
     }
@@ -385,7 +397,28 @@ final class AppState: ObservableObject {
         }
 
         lastRefresh = Date()
+        ensurePluginLinks()
         syncConnected()
+    }
+
+    /// 扫描完补一次插件软链。
+    ///
+    /// 用户可能是手动把 app 拖进「应用程序」装的，没走 A-Kit 的安装流程，
+    /// 那时包里的 `.akitplugin` 不会自动出现在插件目录 —— 工具装了却不生效。
+    /// 幂等：已经指对了的软链不动。
+    private func ensurePluginLinks() {
+        var made = 0
+        for e in entries {
+            guard let app = e.installed, app.path.pathExtension == "app" else { continue }
+            if let links = try? PluginInstallBridge.ensure(from: app.path, into: AKPaths.plugins),
+               !links.isEmpty {
+                made += links.count
+            }
+        }
+        guard made > 0 else { return }
+        AKLogInfo("plugin", "补齐 \(made) 个插件软链")
+        pluginManager.reload()
+        onLayoutChanged?()
     }
 
     func refreshAll() async {
@@ -932,5 +965,26 @@ final class AppState: ObservableObject {
         objectWillChange.send()
         onLayoutChanged?()
         showToast(result.message, ok: true)
+    }
+
+    // MARK: 工具页（插件整页）
+
+    /// 切到某个插件的整页界面。
+    ///
+    /// 这是「工具不再是独立 app、而是 A-Kit 里的一页」的入口：
+    /// 面板里的卡片、工具行、菜单栏右键都走这里，不再另开窗口或 sheet。
+    func openPluginPage(_ pluginId: String) {
+        guard pluginManager.plugin(id: pluginId) != nil else {
+            showToast("这个工具没有整页界面（可能是纯 app 形态）", ok: false)
+            return
+        }
+        focusPluginId = pluginId
+        page = .plugin
+    }
+
+    /// 当前工具页对应的插件；插件没了就自动失效
+    var pluginPage: LoadedPlugin? {
+        guard let id = focusPluginId else { return nil }
+        return pluginManager.plugin(id: id)
     }
 }

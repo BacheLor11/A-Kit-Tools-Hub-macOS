@@ -226,13 +226,21 @@ struct AKitMain {
         }
         // 快照也要把插件带上，否则验证不到「工具自己的界面嵌进来」这条链路
         state.pluginManager.scanAndLoad()
+        // 快照模式可用 AKIT_SNAPSHOT_PLUGIN=<pluginId> 直接落到某个工具页
+        if let pid = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_PLUGIN"], !pid.isEmpty {
+            state.focusPluginId = pid
+            state.page = .plugin
+        }
         Task { await state.refreshAll() }
 
-        let width: CGFloat = isPanel ? 336 : (isImport ? 640 : 1080)
+        // 面板宽度跟运行时一致：取所有工具的需求最大值
+        let panelWidth = min(max(336,
+            state.pluginManager.plugins.compactMap { $0.descriptor.preferredPanelWidth?() }.max() ?? 0), 620)
+        let width: CGFloat = isPanel ? panelWidth : (isImport ? 640 : 1080)
         let root: AnyView = isPanel
-            ? AnyView(PanelView(onOpenConsole: {}, onShowMenu: { _ in }, onQuit: {}, onSettings: {})
-                .environmentObject(state)
-                .frame(width: width))
+            ? AnyView(PanelView(onOpenConsole: {}, onShowMenu: { _ in }, onQuit: {}, onSettings: {},
+                                width: panelWidth)
+                .environmentObject(state))
             : isImport
             ? AnyView(ImportSheet().environmentObject(state).frame(width: 640, height: 540))
             : AnyView(RootView().environmentObject(state).frame(width: width, height: 720))
@@ -275,8 +283,11 @@ struct AKitMain {
         }
 
         if isPanel {
-            // ScrollView 的 fittingSize 不反映内容高度，快照固定一个够高的画布
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 620)
+            // 面板改成宽高自适应之后，快照也按内容自然高度出图，
+            // 这样截出来的就是用户真正看到的那个面板，而不是一块带空白的画布。
+            host.layoutSubtreeIfNeeded()
+            let h = max(host.fittingSize.height, 160)
+            host.frame = NSRect(x: 0, y: 0, width: width, height: h)
         }
         host.layoutSubtreeIfNeeded()
 
@@ -297,6 +308,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let state = AppState()
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
+    /// 建面板时用的宽度（插件增减会改变需求宽度，届时重建）
+    private var panelBuiltWidth: CGFloat = 0
+    /// 合并连续的内容尺寸变化，别一帧里 resize 好几次
+    private var panelResizeWork: DispatchWorkItem?
     private var window: NSWindow?
     /// 菜单栏代持：把配成 hubbar 的插件图标画在系统菜单栏上
     private let statusProxy = StatusItemProxy()
@@ -330,8 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pm.onPresentFull = { [weak self] pluginId in
             guard let self else { return }
             self.hidePanel()
-            // 插件和工具走同一个详情 sheet（selectedId 存的是实体 id）
-            self.state.selectedId = pluginId
+            // 插件要「打开完整界面」= 切到它的工具页，不再弹 sheet / 另开窗口
+            self.state.openPluginPage(pluginId)
             self.showWindow()
         }
 
@@ -464,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 item.submenu = sub
             } else if entity.plugin != nil {
                 let sub = NSMenu()
-                let open = NSMenuItem(title: "打开界面", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
+                let open = NSMenuItem(title: "打开工具页", action: #selector(openEntityFromMenu(_:)), keyEquivalent: "")
                 open.target = self
                 open.representedObject = ["ui", entity.id]
                 sub.addItem(open)
@@ -503,13 +518,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         state.invoke(toolId: pair[0], itemId: pair[1])
     }
 
-    /// 打开一个实体：`ui` → 控制台里的界面；`app` → 启动独立 app
+    /// 打开一个实体：`ui` → 它的工具页；`app` → 启动独立 app
     @objc private func openEntityFromMenu(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
         let kind = pair[0], id = pair[1]
         guard let entity = state.entity(id) else { return }
-        if kind == "ui" || (entity.entry == nil && entity.plugin != nil) {
-            state.selectedId = entity.id
+        if let plugin = entity.plugin, kind == "ui" || entity.entry == nil {
+            state.openPluginPage(plugin.id)
             showWindow()
         } else if let entry = entity.entry {
             state.open(entry)
@@ -535,7 +550,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: 面板
 
+    /// 面板宽度 = 所有工具的需求最大值，最小 336。
+    ///
+    /// 宽度不能写死：A-Key-Stats 的面板本身要 346，A-Sweep 要 356，
+    /// 宿主给窄了插件界面就被裁（以前固定 336，两边必然差 10~20pt）。
+    private var preferredPanelWidth: CGFloat {
+        let asked = state.pluginManager.plugins
+            .compactMap { $0.descriptor.preferredPanelWidth?() }
+            .max() ?? 0
+        return min(max(336, asked), 620)
+    }
+
     private func makePanel() -> NSPanel {
+        let width = preferredPanelWidth
+        panelBuiltWidth = width
+
         let view = PanelView(
             onOpenConsole: { [weak self] in
                 self?.hidePanel()
@@ -544,21 +573,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onShowMenu: { [weak self] bundleId in
                 self?.popMenu(for: bundleId)
             },
+            onOpenPage: { [weak self] pluginId in
+                self?.hidePanel()
+                self?.state.openPluginPage(pluginId)
+                self?.showWindow()
+            },
             onQuit: { NSApp.terminate(nil) },
             onSettings: { [weak self] in
                 self?.hidePanel()
                 self?.state.page = .settings
                 self?.showWindow()
+            },
+            width: width,
+            onLayoutChange: { [weak self] in
+                self?.schedulePanelResize()
             }
         )
         .environmentObject(state)
 
         let host = NSHostingView(rootView: view)
-        host.frame = NSRect(x: 0, y: 0, width: 336, height: 200)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 200)
         host.layoutSubtreeIfNeeded()
-        let height = min(max(host.fittingSize.height, 120), 620)
+        let height = clampedHeight(host.fittingSize.height)
 
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 336, height: height),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         p.isFloatingPanel = true
@@ -569,23 +607,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         p.hasShadow = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        host.frame = NSRect(x: 0, y: 0, width: 336, height: height)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
         p.contentView = host
         return p
     }
 
-    /// 工具数量变化时重新贴合内容高度
+    /// 面板高度上限：屏幕可用高度减掉一点余量，别顶到屏幕外
+    private func clampedHeight(_ h: CGFloat) -> CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        return min(max(h, 120), max(320, visible - 40))
+    }
+
+    /// 内容尺寸变了就重新贴合（同一轮布局里可能连发几次，合并一下）
+    private func schedulePanelResize() {
+        panelResizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let p = self.panel, p.isVisible else { return }
+            self.resizePanelToFit(p)
+        }
+        panelResizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: work)
+    }
+
+    /// 工具数量 / 内容高度变化时重新贴合
     private func resizePanelToFit(_ p: NSPanel) {
         guard let host = p.contentView else { return }
-        host.frame = NSRect(x: 0, y: 0, width: 336, height: 200)
+        let width = p.frame.width
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 200)
         host.layoutSubtreeIfNeeded()
-        let height = min(max(host.fittingSize.height, 120), 620)
+        let height = clampedHeight(host.fittingSize.height)
+        guard abs(height - p.frame.height) > 0.5 else { return }
         var frame = p.frame
         let top = frame.maxY
         frame.size.height = height
         frame.origin.y = top - height
         p.setFrame(frame, display: true)
-        host.frame = NSRect(x: 0, y: 0, width: 336, height: height)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
     }
 
     private func togglePanel() {
@@ -599,6 +656,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showPanel() {
         // 面板打开时顺手对齐一次菜单栏代持状态（有签名缓存，不会闪）
         syncPluginBars()
+        // 工具增减会改变「最宽需求」，宽度变了就重建，否则界面会被裁
+        if panel != nil, abs(panelBuiltWidth - preferredPanelWidth) > 0.5 {
+            panel?.orderOut(nil)
+            panel = nil
+        }
         if panel == nil { panel = makePanel() }
         guard let p = panel else { return }
         resizePanelToFit(p)

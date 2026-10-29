@@ -49,6 +49,8 @@ struct EntityCard: View {
     @Binding var expanded: Bool
     /// 面板里的「⋯」：弹出工具的原生菜单
     var onShowMenu: (String) -> Void = { _ in }
+    /// 打开这个工具的整页界面（插件形态才有）
+    var onOpenPage: (String) -> Void = { _ in }
     @Environment(\.ak) private var ak
     @State private var hovered = false
 
@@ -140,6 +142,19 @@ struct EntityCard: View {
                                 .stroke(ak.accent2.opacity(0.5), lineWidth: 0.5)
                         )
                         .help(reason)
+                }
+
+                if let plugin {
+                    Button {
+                        onOpenPage(plugin.id)
+                    } label: {
+                        Image(systemName: "macwindow")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(ak.inkSoft)
+                            .frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.plain)
+                    .help("打开整页界面（工具页）")
                 }
 
                 if entity.legacy != nil, !legacyMenu.isEmpty {
