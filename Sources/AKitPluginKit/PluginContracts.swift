@@ -56,6 +56,13 @@ public protocol AKPluginDescriptor: NSObjectProtocol {
     /// 返回 nil 时宿主复用 `makePanelView`。
     func makePopoverView(width: CGFloat) -> NSView?
 
+    /// 这个工具的界面最少要多宽（可选）。
+    ///
+    /// 宿主的面板是「宽度取所有工具的最大需求、高度跟着内容走」，
+    /// 不实现就按宿主的默认宽度（336pt）算。
+    /// 旧插件不实现也没关系 —— 所以标成 optional，不升 ABI 版本。
+    @objc optional func preferredPanelWidth() -> CGFloat
+
     /// 控制台里的完整界面（大，整页）。
     /// 插件**不允许**自己开主窗口——那会让 ⌘Q 退掉整个 A-Kit。
     func makeFullView() -> NSView

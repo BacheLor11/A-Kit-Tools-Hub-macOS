@@ -4,6 +4,18 @@ import AKitCore
 import AKitStatusKit
 import AKitPluginKit
 
+/// 内容自然高度的上报通道。
+///
+/// ScrollView 不会把内容高度算进 `fittingSize`，所以宿主永远贴合不准。
+/// 这里让内层内容自己量一次，外层按量到的值设高度 —— 这样「面板跟随内容长高」
+/// 才成立，也就不用一直挂着滚动条。
+private struct PanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// 状态栏点开的面板（不是长菜单，是卡片式面板）
 struct PanelView: View {
     @EnvironmentObject var state: AppState
@@ -11,8 +23,13 @@ struct PanelView: View {
 
     var onOpenConsole: () -> Void
     var onShowMenu: (String) -> Void
+    var onOpenPage: (String) -> Void = { _ in }
     var onQuit: () -> Void
     var onSettings: () -> Void
+    /// 宿主给的宽度：取所有工具的需求最大值，最小 336
+    var width: CGFloat = 336
+    /// 内容尺寸变了 → 请宿主重新贴合面板（宽高都跟随内容）
+    var onLayoutChange: () -> Void = {}
 
     @State private var query = ""
     /// 哪些卡片是展开的（点一下就切，暂时只在本次会话里记）
@@ -23,8 +40,25 @@ struct PanelView: View {
         return [id]
     }()
     @State private var didPrimeExpansion = false
+    /// 卡片内容量出来的自然高度
+    @State private var measuredHeight: CGFloat = 0
 
-    private let cardWidth: CGFloat = 316
+    /// 卡片宽度跟着面板宽度走，不再写死 316
+    private var cardWidth: CGFloat { width - 20 }
+
+    /// 列表最多能长到多高：屏幕可用高度扣掉头尾和边距。
+    /// 超过这个高度才允许滚动 —— 日常工具都够不着这条线。
+    private var maxListHeight: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        return max(240, visible - 210)
+    }
+
+    /// 当前列表高度：还没量到时先给个保守值，量到之后紧跟内容
+    private var listHeight: CGFloat {
+        measuredHeight <= 0 ? 120 : min(measuredHeight, maxListHeight)
+    }
+
+    private var scrolls: Bool { measuredHeight > maxListHeight + 0.5 }
 
     // MARK: 数据
 
@@ -52,35 +86,42 @@ struct PanelView: View {
         VStack(spacing: 0) {
             header
             if totalCount > 4 { searchRow }
-                // 必须能滚：展开的菜单可能有十几项，超过面板高度时被裁掉就会
-                // 出现「菜单显示不全」——这正是之前那个问题的直接原因之一。
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 6) {
-                        if cards.isEmpty {
-                            Text("没有显示中的工具")
-                                .font(AKFont.sans(12))
-                                .foregroundColor(ak.inkSoft)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 14)
-                                .padding(.horizontal, 14)
-                        }
-
-                        ForEach(cards) { entity in
-                            EntityCard(state: state,
-                                       entity: entity,
-                                       width: cardWidth,
-                                       expanded: expansionBinding(entity.id),
-                                       onShowMenu: onShowMenu)
-                        }
+            // 高度由内容决定：量到多高就多高，只有超过屏幕才退化成滚动。
+            // 以前这里是固定 maxHeight: 520，一展开菜单就被裁 / 出滚动条。
+            ScrollView(.vertical, showsIndicators: scrolls) {
+                VStack(spacing: 6) {
+                    if cards.isEmpty {
+                        Text("没有显示中的工具")
+                            .font(AKFont.sans(12))
+                            .foregroundColor(ak.inkSoft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 14)
+                            .padding(.horizontal, 14)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 8)
+
+                    ForEach(cards) { entity in
+                        EntityCard(state: state,
+                                   entity: entity,
+                                   width: cardWidth,
+                                   expanded: expansionBinding(entity.id),
+                                   onShowMenu: onShowMenu,
+                                   onOpenPage: onOpenPage)
+                    }
                 }
-                .frame(maxHeight: 520)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+                .background(
+                    GeometryReader { g in
+                        Color.clear.preference(key: PanelContentHeightKey.self, value: g.size.height)
+                    }
+                )
+            }
+            .frame(height: listHeight)
+            .scrollDisabled(!scrolls)
 
             footer
         }
-        .frame(width: 336)
+        .frame(width: width)
         .background(ak.bg)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
@@ -89,6 +130,12 @@ struct PanelView: View {
         )
         .onAppear(perform: primeExpansion)
         .onChange(of: state.focusPluginId) { _ in primeExpansion() }
+        .onPreferenceChange(PanelContentHeightKey.self) { h in
+            guard abs(h - measuredHeight) > 0.5 else { return }
+            measuredHeight = h
+            // 高度变了：让宿主把 NSPanel 重新贴合一次
+            DispatchQueue.main.async { onLayoutChange() }
+        }
     }
 
     /// 第一次打开：展开第一个有界面的卡片，避免用户看到的还是"摘要"。

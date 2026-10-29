@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.3</string>
+	<string>0.5.4</string>
 	<key>CFBundleVersion</key>
-	<string>9</string>
+	<string>10</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -30,6 +30,8 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>A-Kit · MIT License</string>
+	<key>NSInputMonitoringUsageDescription</key>
+	<string>A-Kit 本身不采集键鼠。这里的授权是给以插件形态运行的工具（例如 A-Key-Stats）用的——它们跑在 A-Kit 进程里，系统会把「输入监控」记在这个 app 名下。</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
 </dict>
