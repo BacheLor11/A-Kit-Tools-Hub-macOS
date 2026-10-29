@@ -51,8 +51,10 @@ struct PluginOnlyRow: View {
                     Button("接管") { state.pluginManager.takeOver(pluginId: plugin.id) }
                         .buttonStyle(AKPrimaryButtonStyle(filled: false))
                 }
-                Button("打开界面") { state.selectedId = entity.id }
-                    .buttonStyle(AKPrimaryButtonStyle())
+                Button("打开窗口") {
+                    if let plugin { state.openPluginWindow(plugin.id) }
+                }
+                .buttonStyle(AKPrimaryButtonStyle())
                 Menu {
                     Button("详情") { state.selectedId = entity.id }
                     Button("在访达中显示") {
@@ -89,7 +91,10 @@ struct PluginOnlyRow: View {
     }
 }
 
-/// 插件的详情：它的完整界面原样铺在这里。
+/// 插件的详情：只讲元信息。
+///
+/// 界面**不在这里铺** —— 工具的完整界面在它自己的独立窗口里，
+/// 控制台里塞一份等于把 A-Kit 变成工具的外壳，不是这套东西的定位。
 struct PluginDetailSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.ak) private var ak
@@ -98,12 +103,47 @@ struct PluginDetailSheet: View {
     @State private var confirmRemove = false
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             header
             Rectangle().fill(ak.border).frame(height: 0.5)
-            PluginFullView(plugin: plugin)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("这个工具以插件形态跑在 A-Kit 进程里。它的完整界面在它自己的独立窗口里——A-Kit 只做宿主，不把工具界面塞进控制台。")
+                    .font(AKFont.sans(12))
+                    .foregroundColor(ak.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 6)
+
+                infoRow("插件包", plugin.record.bundlePath, mono: true)
+                infoRow("ABI", "v\(plugin.record.abiVersion)")
+                if let app = plugin.record.appPath {
+                    infoRow("独立 app", app, mono: true)
+                }
+                if let s = plugin.statusText, !s.isEmpty {
+                    infoRow("状态", s)
+                }
+                if let r = plugin.inactiveReason {
+                    infoRow("让位原因", r)
+                }
+
+                Spacer(minLength: 0)
+
+                HStack(spacing: 8) {
+                    Button("打开窗口") {
+                        state.selectedId = nil
+                        state.openPluginWindow(plugin.id)
+                    }
+                    .buttonStyle(AKPrimaryButtonStyle())
+                    Spacer()
+                    Button("移出 A-Kit") { confirmRemove = true }
+                        .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                    Button("关闭") { state.selectedId = nil }
+                        .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                }
+            }
+            .padding(20)
         }
-        .frame(width: 860, height: 580)
+        .frame(width: 540, height: 400)
         .background(ak.bg)
         .confirmationDialog("把「\(entity.name)」移出 A-Kit？", isPresented: $confirmRemove) {
             Button("移出（不动工具本体）", role: .destructive) {
@@ -113,6 +153,21 @@ struct PluginDetailSheet: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("只会断开 A-Kit 这边的接入口；工具本体、插件文件都不删。")
+        }
+    }
+
+    private func infoRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(label)
+                .font(AKFont.sans(10.5))
+                .foregroundColor(ak.inkSoft.opacity(0.7))
+                .frame(width: 62, alignment: .leading)
+            Text(value)
+                .font(mono ? .system(size: 10.5, design: .monospaced) : AKFont.sans(11.5))
+                .foregroundColor(ak.ink.opacity(0.85))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 
@@ -131,15 +186,6 @@ struct PluginDetailSheet: View {
                     .foregroundColor(ak.inkSoft)
             }
             Spacer()
-            if let s = plugin.statusText, !s.isEmpty {
-                Text(s)
-                    .font(AKFont.sans(11))
-                    .foregroundColor(ak.inkSoft)
-            }
-            Button("移出 A-Kit") { confirmRemove = true }
-                .buttonStyle(AKPrimaryButtonStyle(filled: false))
-            Button("关闭") { state.selectedId = nil }
-                .buttonStyle(AKPrimaryButtonStyle(filled: false))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)

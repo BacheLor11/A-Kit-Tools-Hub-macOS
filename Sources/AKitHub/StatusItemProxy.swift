@@ -32,13 +32,9 @@ final class StatusItemProxy: NSObject {
         items.removeAll()
 
         for plugin in wanted {
-            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
             if let button = item.button {
-                let icon = plugin.icon ?? NSImage(systemSymbolName: "puzzlepiece.extension",
-                                                  accessibilityDescription: plugin.record.displayName)
-                icon?.isTemplate = true
-                icon?.size = NSSize(width: 17, height: 17)
-                button.image = icon
+                button.image = Self.icon(for: plugin)
                 button.imagePosition = .imageOnly
                 button.toolTip = plugin.record.displayName
                 button.target = self
@@ -48,6 +44,28 @@ final class StatusItemProxy: NSObject {
             items[plugin.record.id] = item
         }
         AKLogInfo("plugin", "菜单栏代持 \(items.count) 个：\(items.keys.sorted().joined(separator: ", "))")
+    }
+
+    /// 菜单栏图标。
+    ///
+    /// **绝对不能无脑 `isTemplate = true`** —— 插件给的往往是它自己的 app 图标
+    /// （彩色多色），模板化之后系统把它当单通道蒙版渲染，整格就变成一个实心
+    /// 黑方块。之前的「菜单栏多出两个黑方块」就是这么来的。
+    ///
+    /// 单色模板图由插件自己标记（`img.isTemplate = true`），这里原样尊重。
+    private static func icon(for plugin: LoadedPlugin) -> NSImage? {
+        if let img = plugin.icon {
+            let copy = img.copy() as? NSImage ?? img
+            // app 图标自带一圈留白，压到 18pt 会显得又小又糊；
+            // 给 16pt 让它和系统图标视觉重量对齐。
+            copy.size = NSSize(width: 16, height: 16)
+            return copy
+        }
+        let fallback = NSImage(systemSymbolName: "puzzlepiece.extension",
+                               accessibilityDescription: plugin.record.displayName)
+        fallback?.isTemplate = true
+        fallback?.size = NSSize(width: 16, height: 16)
+        return fallback
     }
 
     /// 布局改了（比如用户把某个工具从 hubbar 切到 board）要强制重建

@@ -11,16 +11,11 @@ final class AppState: ObservableObject {
 
     enum Page: String, CaseIterable, Identifiable {
         case tools, updates, menuBar, thirdParty, settings
-        /// 工具自己的整页界面（插件形态才有）。
-        ///
-        /// 不放进 `allCases`：它不是一个固定页签，而是「每装一个插件就多一页」，
-        /// 具体是哪一页由 `focusPluginId` 决定，侧栏单独列。
-        case plugin
 
         var id: String { rawValue }
 
-        /// 侧栏固定页签（`.plugin` 由侧栏动态补）
-        static var fixed: [Page] { [.tools, .updates, .menuBar, .thirdParty, .settings] }
+        /// 侧栏页签
+        static var fixed: [Page] { allCases }
 
         var title: String {
             switch self {
@@ -29,7 +24,6 @@ final class AppState: ObservableObject {
             case .menuBar: return "菜单栏"
             case .thirdParty: return "第三方"
             case .settings: return "设置"
-            case .plugin: return "工具页"
             }
         }
         var symbol: String {
@@ -39,7 +33,6 @@ final class AppState: ObservableObject {
             case .menuBar: return "menubar.rectangle"
             case .thirdParty: return "app.badge.checkmark"
             case .settings: return "slider.horizontal.3"
-            case .plugin: return "macwindow"
             }
         }
     }
@@ -146,6 +139,10 @@ final class AppState: ObservableObject {
         }
         server.onEvent = { [weak self] name, payload, from in
             self?.pluginManager.broadcast(name: name, payload: payload, from: from)
+        }
+        // 外部（脚本 / 别的工具）要求打开某个工具的独立窗口
+        server.onOpenPluginWindow = { [weak self] pid in
+            self?.openPluginWindow(pid)
         }
 
         guard bootstrap else { return }
@@ -967,24 +964,18 @@ final class AppState: ObservableObject {
         showToast(result.message, ok: true)
     }
 
-    // MARK: 工具页（插件整页）
+    // MARK: 工具窗口（插件整页）
 
-    /// 切到某个插件的整页界面。
+    /// 打开某个工具的**独立窗口**。
     ///
-    /// 这是「工具不再是独立 app、而是 A-Kit 里的一页」的入口：
-    /// 面板里的卡片、工具行、菜单栏右键都走这里，不再另开窗口或 sheet。
-    func openPluginPage(_ pluginId: String) {
-        guard pluginManager.plugin(id: pluginId) != nil else {
-            showToast("这个工具没有整页界面（可能是纯 app 形态）", ok: false)
+    /// 之前这里是把插件的整页塞进控制台侧栏当一页，用户明确不要那种形态 ——
+    /// 工具应该是它自己的一扇窗口，A-Kit 只做宿主，不改写它的信息架构。
+    /// 面板卡片、工具行、菜单栏右键、插件自己调 `presentFullPanel` 都走这里。
+    func openPluginWindow(_ pluginId: String) {
+        guard let plugin = pluginManager.plugin(id: pluginId) else {
+            showToast("这个工具没有可打开的界面（可能是纯 app 形态）", ok: false)
             return
         }
-        focusPluginId = pluginId
-        page = .plugin
-    }
-
-    /// 当前工具页对应的插件；插件没了就自动失效
-    var pluginPage: LoadedPlugin? {
-        guard let id = focusPluginId else { return nil }
-        return pluginManager.plugin(id: id)
+        PluginWindows.shared.show(plugin)
     }
 }

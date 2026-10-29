@@ -154,7 +154,7 @@ struct EntityCard: View {
                             .frame(width: 16, height: 16)
                     }
                     .buttonStyle(.plain)
-                    .help("打开整页界面（工具页）")
+                    .help("在独立窗口里打开")
                 }
 
                 if entity.legacy != nil, !legacyMenu.isEmpty {
@@ -195,6 +195,8 @@ struct EntityCard: View {
                 .resizable()
                 .interpolation(.high)
                 .frame(width: 16, height: 16)
+                // app 图标带自己的圆角，不裁的话在米白底上会顶成一整块灰方块
+                .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
         } else {
             RoundedRectangle(cornerRadius: 3)
                 .fill(ak.accent.opacity(0.12))

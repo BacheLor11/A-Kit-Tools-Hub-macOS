@@ -21,6 +21,8 @@ final class HubServer {
     var onClientsChanged: (() -> Void)?
     /// 只是某工具的状态文字变了（轻量通道，不重建条目）
     var onStatusChanged: ((_ bundleId: String, _ status: String) -> Void)?
+    /// 外部要求打开某个工具的独立窗口（`openWindow` 方法）
+    var onOpenPluginWindow: ((String) -> Void)?
     /// 某个工具发来事件（用于界面展示 / 转发）
     var onEvent: ((_ name: String, _ payload: [String: String], _ from: String?) -> Void)?
 
@@ -212,6 +214,15 @@ final class HubServer {
             }
         case "pong":
             break
+        case "openWindow":
+            // 让宿主打开某个工具的独立窗口。
+            // 命令行 / 脚本 / 别的工具都可以用：一行 JSON 就行
+            //   {"jsonrpc":"2.0","method":"openWindow","params":{"pluginId":"com.aibao.AKeyStats"}}
+            guard let params = obj["params"] as? [String: Any],
+                  let pid = params["pluginId"] as? String, !pid.isEmpty else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.onOpenPluginWindow?(pid)
+            }
         default:
             break
         }

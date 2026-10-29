@@ -33,7 +33,6 @@ struct RootView: View {
         case .menuBar: MenuBarPage()
         case .thirdParty: ThirdPartyPage()
         case .settings: SettingsPage()
-        case .plugin: PluginPage()
         }
     }
 }
@@ -71,8 +70,6 @@ private struct Sidebar: View {
             }
             .padding(.horizontal, 12)
 
-            pluginSection
-
             Spacer(minLength: 12)
 
             VStack(alignment: .leading, spacing: 7) {
@@ -95,47 +92,6 @@ private struct Sidebar: View {
             .padding(.bottom, 22)
         }
         .frame(width: 198)
-    }
-
-    /// 装了插件的工具在侧栏各占一行。
-    ///
-    /// 这就是「工具是 A-Kit 的一页」：点进来是工具自己的整页界面，
-    /// 不是另开一个窗口、也不是另装一个 app。
-    @ViewBuilder
-    private var pluginSection: some View {
-        let plugins = state.pluginManager.plugins
-        if !plugins.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                Rectangle()
-                    .fill(ak.border)
-                    .frame(height: 0.5)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 10)
-                    .padding(.bottom, 12)
-
-                Text("工具页")
-                    .font(AKFont.sans(9.5, weight: .medium))
-                    .tracking(2)
-                    .foregroundColor(ak.inkSoft.opacity(0.65))
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 4)
-
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 2) {
-                        ForEach(plugins) { p in
-                            PluginSidebarItem(
-                                plugin: p,
-                                selected: state.page == .plugin && state.focusPluginId == p.id
-                            ) {
-                                state.openPluginPage(p.id)
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: 190)
-            }
-            .padding(.horizontal, 12)
-        }
     }
 
     private var version: String {
@@ -170,55 +126,6 @@ extension Sidebar {
             return b
         }
         return repoPlist?["CFBundleVersion"] as? String ?? "0"
-    }
-}
-
-/// 侧栏里的一个工具页（对应一个已装插件）
-private struct PluginSidebarItem: View {
-    @Environment(\.ak) private var ak
-    var plugin: LoadedPlugin
-    var selected: Bool
-    var action: () -> Void
-    @State private var hovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                if let icon = plugin.icon {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .interpolation(.high)
-                        .frame(width: 15, height: 15)
-                } else {
-                    Image(systemName: "macwindow")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 16)
-                }
-                Text(plugin.record.displayName)
-                    .font(AKFont.sans(12.5, weight: selected ? .medium : .regular))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if !plugin.isActive {
-                    Circle()
-                        .fill(ak.accent2.opacity(0.8))
-                        .frame(width: 5, height: 5)
-                        .help(plugin.inactiveReason ?? "")
-                }
-            }
-            .foregroundColor(selected ? ak.accent : ak.inkSoft)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(selected ? ak.surface : (hovered ? ak.surface.opacity(0.6) : Color.clear))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(selected ? ak.border : Color.clear, lineWidth: 0.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovered = $0 }
     }
 }
 
@@ -261,71 +168,6 @@ private struct SidebarItem: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-    }
-}
-
-// MARK: - 工具页（插件的整页界面）
-
-/// 工具自己的整页界面，长在 A-Kit 里。
-///
-/// 这一页存在的意义：工具不必再作为独立 app 在程序坞里占一个图标 ——
-/// 它的界面就是 A-Kit 的一页，跟着 A-Kit 一起开关、一起退出。
-private struct PluginPage: View {
-    @EnvironmentObject var state: AppState
-    @Environment(\.ak) private var ak
-
-    var body: some View {
-        if let plugin = state.pluginPage {
-            VStack(spacing: 0) {
-                header(plugin)
-                Rectangle().fill(ak.border).frame(height: 0.5)
-                PluginFullView(plugin: plugin)
-            }
-            .background(ak.bg)
-        } else {
-            VStack(spacing: 8) {
-                Text("没有选中的工具页")
-                    .font(AKFont.serif(20))
-                    .foregroundColor(ak.ink)
-                Text("左边「工具页」里点一个工具，它的完整界面会铺在这里。")
-                    .font(AKFont.sans(12))
-                    .foregroundColor(ak.inkSoft)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ak.bg)
-        }
-    }
-
-    private func header(_ plugin: LoadedPlugin) -> some View {
-        HStack(spacing: 9) {
-            if let icon = plugin.icon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 18, height: 18)
-            }
-            Text(plugin.record.displayName)
-                .font(AKFont.serif(15))
-                .foregroundColor(ak.ink)
-            Text("v\(plugin.record.version)")
-                .font(AKFont.sans(10))
-                .foregroundColor(ak.inkSoft.opacity(0.75))
-
-            if !plugin.isActive, let reason = plugin.inactiveReason {
-                Text(reason)
-                    .font(AKFont.sans(9.5))
-                    .foregroundColor(ak.accent2)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Text("跟随 A-Kit 启动与退出")
-                .font(AKFont.sans(9.5))
-                .foregroundColor(ak.inkSoft.opacity(0.55))
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
     }
 }
 
@@ -1331,6 +1173,26 @@ private struct SettingsPage: View {
                         state.updateSettings { $0.showMenuBarIcon = v }
                         NotificationCenter.default.post(name: .akitMenuBarVisibilityChanged, object: nil)
                     }
+                    HStack {
+                        Text("菜单栏图标大小").font(AKFont.sans(12.5)).foregroundColor(ak.inkSoft)
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { state.settings.menuBarIconSize },
+                            set: { v in
+                                state.updateSettings { $0.menuBarIconSize = v }
+                                NotificationCenter.default.post(name: .akitMenuBarIconSizeChanged, object: nil)
+                            }
+                        )) {
+                            Text("小 16").tag(16.0)
+                            Text("标准 18").tag(18.0)
+                            Text("大 20").tag(20.0)
+                            Text("更大 22").tag(22.0)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 280)
+                    }
+                    hint("系统标准是 18pt。菜单栏里 A-Kit 图标觉得小就调大一档——只影响 A-Kit 自己的图标，工具图标不占菜单栏。")
                     toggleRow("在 Dock 显示", isOn: state.settings.showDockIcon) { v in
                         state.updateSettings { $0.showDockIcon = v }
                         NotificationCenter.default.post(name: .akitDockVisibilityChanged, object: nil)
@@ -1696,5 +1558,6 @@ struct JobBar: View {
 
 extension Notification.Name {
     static let akitMenuBarVisibilityChanged = Notification.Name("akit.menubar.visibility")
+    static let akitMenuBarIconSizeChanged = Notification.Name("akit.menubar.iconsize")
     static let akitDockVisibilityChanged = Notification.Name("akit.dock.visibility")
 }
