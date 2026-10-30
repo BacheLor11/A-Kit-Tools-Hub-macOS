@@ -212,6 +212,10 @@ final class AppState: ObservableObject {
     ///
     /// 面板、工具页、详情页都应该读这个，不要再分别读 `entries` / `pluginManager.plugins`，
     /// 否则同一个工具会在两处各出现一次、版本还对不上。
+    ///
+    /// **A-Kit 自己不在里面**：远端清单里有它（自我更新要用），但它是宿主不是工具，
+    /// 一旦混进列表，工具页就会出现「A-Kit」这一条 —— 用户看不出自己该不该管它。
+    /// 自更新走的是 `updates`（读 `entries`），不受这层过滤影响。
     var entities: [ToolEntity] {
         ToolEntityIndex.merge(
             entries: allEntries,
@@ -219,6 +223,7 @@ final class AppState: ObservableObject {
             connected: connected,
             isDisabled: { [weak self] id in self?.pluginManager.isDisabled(id) ?? false }
         )
+        .filter { !$0.isHost }
     }
 
     func entity(_ id: String) -> ToolEntity? {
@@ -236,7 +241,19 @@ final class AppState: ObservableObject {
 
     var updates: [ToolEntry] { entries.filter { $0.updateAvailable } }
 
-    var installedCount: Int { allEntries.filter { $0.isInstalled }.count }
+    /// 「已安装」的计数不含 A-Kit 自己 —— 它是宿主，不是被管理的工具
+    var installedCount: Int { allEntries.filter { $0.isInstalled && !isHostEntry($0) }.count }
+
+    /// 清单记录层面的「是不是我自己」，跟 `ToolEntity.isHost` 同一套判据
+    func isHostEntry(_ e: ToolEntry) -> Bool {
+        let hostId = Bundle.main.bundleIdentifier ?? "com.aibao.AKitHub"
+        if e.id == hostId { return true }
+        if let b = e.installed?.bundleId, b == hostId { return true }
+        if let b = e.spec?.bundleId, b == hostId { return true }
+        if let p = e.installed?.path.standardizedFileURL.path,
+           p == Bundle.main.bundlePath { return true }
+        return false
+    }
 
     func entry(_ id: String) -> ToolEntry? { allEntries.first { $0.id == id } }
 

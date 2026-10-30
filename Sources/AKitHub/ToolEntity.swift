@@ -54,8 +54,24 @@ struct ToolEntity: Identifiable {
     }
 
     var isInstalled: Bool { entry?.isInstalled == true }
-    /// 是不是 A-Kit 自己 —— 面板的工具列表里不该把宿主自己也列成一个工具
-    var isHost: Bool { id == (Bundle.main.bundleIdentifier ?? "com.aibao.AKitHub") }
+
+    /// 是不是 A-Kit 自己。
+    ///
+    /// A-Kit 会出现在远端清单里（它是用来自我更新的），但那不代表它是一个工具 ——
+    /// 宿主不该在「工具」页、面板左栏、菜单栏列表里把自己列成一条。
+    ///
+    /// 判据给足：bundleId 对得上、或者装的位置就是当前运行的 .app，都算。
+    /// 光比 bundleId 不够 —— 开发构建 / 改过 bundle id 的副本会漏网。
+    var isHost: Bool {
+        let hostId = Bundle.main.bundleIdentifier ?? "com.aibao.AKitHub"
+        if id == hostId { return true }
+        if let b = entry?.installed?.bundleId, b == hostId { return true }
+        if let b = entry?.spec?.bundleId, b == hostId { return true }
+        if plugin?.record.id == hostId { return true }
+        if let p = entry?.installed?.path.standardizedFileURL.path,
+           p == Bundle.main.bundlePath { return true }
+        return false
+    }
     /// 布局文件（layout.json 的分组 / 隐藏 / 落点）用的是 entry.id；
     /// 实体主键是 bundleId。两者可能不同（com.aibao.AKeyStats vs akeystats），
     /// 所有读写 layout 的地方都必须用这个，否则开关点了没反应。
