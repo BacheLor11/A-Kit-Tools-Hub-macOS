@@ -28,22 +28,49 @@ jobs:
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
           echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
 
-      # generate_release_notes 只认 PR 关联，纯 commit 的仓库会退化成一句「Full Changelog」，
-      # 所以这里自己从 git log 攒说明，读起来至少像人写的更新日志。
+      # 更新说明优先取 CHANGELOG.md 里对应版本的那一段（人写的，分「新增 / 变更 / 修复」）；
+      # 没有这一段才退回 git log 攒 —— 那种只能列 commit 标题，读起来像流水账。
       - name: 生成更新说明
         run: |
           mkdir -p build
           PREV=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || true)
-          RANGE="${PREV:+$PREV..}HEAD"
-          {
-            echo "## A-Kit ${VERSION}"
-            echo
-            git log --no-merges --reverse --pretty=format:'- %s%n' "$RANGE"
-            if [ -n "$PREV" ]; then
-              echo
-              echo "**完整对比**：https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...v${VERSION}"
-            fi
-          } > build/RELEASE_NOTES.md
+          export PREV
+          python3 - "$VERSION" > build/RELEASE_NOTES.md <<'PY'
+          import re, subprocess, sys, pathlib, os
+
+          version = sys.argv[1]
+          out = [f"## A-Kit {version}", ""]
+
+          section = ""
+          p = pathlib.Path("CHANGELOG.md")
+          if p.exists():
+              text = p.read_text(encoding="utf-8")
+              # 匹配 "## 0.5.8" 或 "## [0.5.8]" 开头的段落，直到下一个二级标题
+              m = re.search(rf"^##\s*\[?{re.escape(version)}\]?[^\n]*\n(.*?)(?=^##\s|\Z)",
+                            text, re.S | re.M)
+              if m:
+                  # 去掉段落末尾那条分隔线，不然 Release 正文会以一根横线结尾
+                  section = re.sub(r"\n-{3,}\s*$", "", m.group(1).strip()).strip()
+
+          if section:
+              out.append(section)
+          else:
+              prev = os.environ.get("PREV", "")
+              rng = f"{prev}..HEAD" if prev else "HEAD"
+              log = subprocess.run(["git", "log", "--no-merges", "--reverse",
+                                    "--pretty=format:- %s", rng],
+                                   capture_output=True, text=True).stdout
+              out.append("_CHANGELOG.md 里还没有这一版，以下为提交记录：_")
+              out.append("")
+              out.append(log)
+
+          prev = os.environ.get("PREV", "")
+          if prev:
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              out += ["", f"**完整对比**：https://github.com/{repo}/compare/{prev}...v{version}"]
+
+          print("\n".join(out))
+          PY
           cat build/RELEASE_NOTES.md
 
       - name: 打包

@@ -38,6 +38,7 @@ Scripts/package-plugin.sh .build/release/libMyToolPlugin.dylib dist com.example.
 📖 **[插件接入指南](docs/PLUGIN-SDK.md)**（五分钟接入 + 协议参考 + 五个必踩的坑）
 📐 [插件化架构与取舍](docs/PLUGIN-ARCH.md)
 🔌 [旧协议 SDK](docs/SDK.md) · [工具仓库规范](docs/TOOL-REPO.md)
+📝 [更新日志](CHANGELOG.md)（每一版的 GitHub Release 正文就是从这里对应段落生成的）
 
 ---
 
