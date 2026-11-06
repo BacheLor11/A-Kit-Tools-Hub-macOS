@@ -46,6 +46,32 @@ struct AKitMain {
         app.run()
     }
 
+    /// 下载进度的冒烟测试：把 URL 存到 <path>，每 0.1 秒打一行采样。
+    static func testDownload(_ url: URL, to path: String) {
+        let sem = DispatchSemaphore(value: 0)
+        let dest = URL(fileURLWithPath: path)
+        var lastPercent = -1
+        Task.detached {
+            do {
+                let start = Date()
+                let file = try await Installer.download(from: url, to: dest) { p in
+                    let pct = Int(((p.fraction ?? 0) * 100).rounded())
+                    guard pct != lastPercent else { return }
+                    lastPercent = pct
+                    print("progress \(pct)% · \(p.text)")
+                }
+                let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int64) ?? 0
+                print(String(format: "done %lld B in %.1fs", size, Date().timeIntervalSince(start)))
+            } catch {
+                print("FAIL \(error.localizedDescription)")
+            }
+            sem.signal()
+        }
+        sem.wait()
+        exit(0)
+    }
+
+
     /// 协议自测：起服务 → 客户端注册 → 服务端下发一次点击 → 校验客户端收到
     static func selfTest() {
         // 自测用独立 socket：不能碰用户正在跑的那个 Hub
@@ -212,6 +238,11 @@ struct AKitMain {
     }
 
     static func renderSnapshot(to path: String, pageName: String) {        let app = NSApplication.shared
+        // 开发用：AKIT_TEST_DOWNLOAD=<url> 单独跑一遍带进度的下载，打印采样点后退出
+        if let raw = ProcessInfo.processInfo.environment["AKIT_TEST_DOWNLOAD"], let url = URL(string: raw) {
+            testDownload(url, to: path)
+            return
+        }
         app.setActivationPolicy(.accessory)
         // 快照强制一个 appearance：AKIT_SNAPSHOT_DARK=1 出深色，方便对比两边是否同步
         let dark = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_DARK"] == "1"
@@ -228,6 +259,16 @@ struct AKitMain {
         }
         // 快照也要把插件带上，否则验证不到「工具自己的界面嵌进来」这条链路
         state.pluginManager.scanAndLoad()
+
+        // 开发用：AKIT_SNAPSHOT_JOB="标题|详情|0.27" 塞一个假任务，检查进度条排版。
+        // 必须在建 host 之前设 —— 离屏 NSHostingView 不会像真实窗口那样收到后续更新。
+        if let raw = ProcessInfo.processInfo.environment["AKIT_SNAPSHOT_JOB"], !raw.isEmpty {
+            let parts = raw.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            state.job = AppState.Job(
+                title: parts.count > 0 ? parts[0] : "更新",
+                detail: parts.count > 1 ? parts[1] : "下载中…",
+                progress: parts.count > 2 ? Double(parts[2]) : nil)
+        }
         Task { await state.refreshAll() }
 
         // 快照模式可用 AKIT_SNAPSHOT_PLUGIN=<pluginId> 直接出「工具独立窗口里的内容」。
@@ -305,7 +346,12 @@ struct AKitMain {
             state.layout.setDisplay(.expanded, for: info.bundleId)
         }
 
+        // 开发用：AKIT_SNAPSHOT_JOB="标题|详情|0.27" 塞一个假任务，检查进度条排版
+        // （已在建 host 前设置，这里不再重复）
+
         // 面板现在是固定尺寸，快照直接按窗口真实大小出图
+        // 先让上面这些状态改动走完一轮 SwiftUI 更新，否则刚塞进去的 job / 假工具还没画出来
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
         host.layoutSubtreeIfNeeded()
 
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {

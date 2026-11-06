@@ -198,14 +198,15 @@ public enum ImportInstaller {
 
     @discardableResult
     public static func install(_ c: ImportCandidate, into dir: URL, backupRoot: URL,
-                               progress: @escaping (String) -> Void) async throws -> ImportedTool {
+                               progress: @escaping (String) -> Void,
+                               onDownload: ((DownloadProgress) -> Void)? = nil) async throws -> ImportedTool {
         guard !c.needsSudo else { throw ImportInstallError.pkgNotSupported }
         AKPaths.ensure()
 
         progress("下载 \(c.assetName)…")
         guard let url = URL(string: c.assetURL) else { throw InstallerError.downloadFailed("链接无效") }
         let local = AKPaths.downloads.appendingPathComponent(c.assetName)
-        let file = try await Installer.download(from: url, to: local)
+        let file = try await Installer.download(from: url, to: local, onProgress: onDownload)
 
         if let expected = c.sha256, !expected.isEmpty {
             progress("校验 SHA-256…")

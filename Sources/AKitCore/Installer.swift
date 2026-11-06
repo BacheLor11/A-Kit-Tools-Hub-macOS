@@ -24,27 +24,153 @@ public enum InstallerError: LocalizedError {
     }
 }
 
+/// 下载进度。`total <= 0` 表示服务器没给 Content-Length，只能显示「已下载多少」。
+public struct DownloadProgress: Sendable {
+    public var received: Int64
+    public var total: Int64
+    /// 字节/秒（0.25 秒滑动窗口算的，没开始算的时候是 0）
+    public var speed: Double
+
+    public init(received: Int64 = 0, total: Int64 = 0, speed: Double = 0) {
+        self.received = received
+        self.total = total
+        self.speed = speed
+    }
+
+    /// 0…1。拿不到总长度时是 nil —— 那种情况界面要显示成不确定态，不能假装 0%。
+    public var fraction: Double? {
+        guard total > 0 else { return nil }
+        return min(1, max(0, Double(received) / Double(total)))
+    }
+
+    /// 「12.3 MB / 45.6 MB · 3.1 MB/s」
+    public var text: String {
+        func size(_ n: Int64) -> String {
+            let mb = Double(n) / 1_048_576
+            return mb >= 1 ? String(format: "%.1f MB", mb) : String(format: "%.0f KB", Double(n) / 1024)
+        }
+        var s = total > 0 ? "\(size(received)) / \(size(total))" : size(received)
+        if speed > 1 {
+            s += String(format: " · %.1f MB/s", speed / 1_048_576)
+        }
+        return s
+    }
+}
+
+/// URLSession 的下载进度回调只能走 delegate，这里把它包成 async/await。
+///
+/// 以前用 `URLSession.shared.download(from:)`：没有回调、没有进度，
+/// 点完「更新」界面一动不动，用户以为按钮没生效。
+private final class DownloadRunner: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+
+    private let destination: URL
+    private let onProgress: ((DownloadProgress) -> Void)?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var session: URLSession?
+    private var finished = false
+    private var lastSample = Date()
+    private var lastBytes: Int64 = 0
+    private var speed: Double = 0
+    private var lastEmit = Date.distantPast
+
+    init(destination: URL, onProgress: ((DownloadProgress) -> Void)?) {
+        self.destination = destination
+        self.onProgress = onProgress
+    }
+
+    func run(_ url: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<URL, Error>) in
+            continuation = c
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 60
+            config.timeoutIntervalForResource = 60 * 30
+            let s = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+            session = s
+            s.downloadTask(with: url).resume()
+        }
+    }
+
+    private func finish(_ result: Result<URL, Error>) {
+        guard !finished else { return }
+        finished = true
+        session?.finishTasksAndInvalidate()
+        session = nil
+        let c = continuation
+        continuation = nil
+        switch result {
+        case .success(let url): c?.resume(returning: url)
+        case .failure(let e): c?.resume(throwing: e)
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        let now = Date()
+        let dt = now.timeIntervalSince(lastSample)
+        if dt >= 0.25 {
+            speed = Double(totalBytesWritten - lastBytes) / dt
+            lastSample = now
+            lastBytes = totalBytesWritten
+        }
+        // 进度刷太密会把主线程塞满，10 fps 对进度条完全够
+        guard now.timeIntervalSince(lastEmit) >= 0.1 else { return }
+        lastEmit = now
+        onProgress?(DownloadProgress(received: totalBytesWritten,
+                                     total: max(totalBytesExpectedToWrite, 0),
+                                     speed: speed))
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        if let http = downloadTask.response as? HTTPURLResponse, http.statusCode >= 400 {
+            finish(.failure(InstallerError.downloadFailed("HTTP \(http.statusCode)")))
+            return
+        }
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: location, to: destination)
+            finish(.success(destination))
+        } catch {
+            finish(.failure(InstallerError.downloadFailed(error.localizedDescription)))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error else { return }
+        finish(.failure(InstallerError.downloadFailed(error.localizedDescription)))
+    }
+}
+
 public enum Installer {
 
     // MARK: 下载
 
-    public static func download(from url: URL, to dest: URL) async throws -> URL {
+    /// 带进度的下载。
+    ///
+    /// `onProgress` 在后台队列里回调（0.1 秒最多一次），调用方要自己切回主线程。
+    public static func download(from url: URL, to dest: URL,
+                                onProgress: ((DownloadProgress) -> Void)? = nil) async throws -> URL {
         AKPaths.ensure()
         try? FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         do {
-            let (tmp, response) = try await URLSession.shared.download(from: url)
-            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-                throw InstallerError.downloadFailed("HTTP \(http.statusCode)")
-            }
-            try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.moveItem(at: tmp, to: dest)
-            AKLogInfo("install", "downloaded \(url.lastPathComponent) -> \(dest.path)")
-            return dest
+            let runner = DownloadRunner(destination: dest, onProgress: onProgress)
+            let out = try await runner.run(url)
+            onProgress?(DownloadProgress(received: fileSize(out), total: fileSize(out), speed: 0))
+            AKLogInfo("install", "downloaded \(url.lastPathComponent) -> \(out.path)")
+            return out
         } catch let e as InstallerError {
             throw e
         } catch {
             throw InstallerError.downloadFailed(error.localizedDescription)
         }
+    }
+
+    private static func fileSize(_ url: URL) -> Int64 {
+        let v = try? url.resourceValues(forKeys: [.fileSizeKey])
+        return Int64(v?.fileSize ?? 0)
     }
 
     public static func sha256(at url: URL) throws -> String {

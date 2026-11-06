@@ -12,10 +12,14 @@ struct RootView: View {
     var body: some View {
         // 跟随系统亮暗：博客那套令牌有对应的深色版本
         let ak = AKScheme.of(colorScheme)
-        HStack(spacing: 0) {
-            Sidebar()
-            Rectangle().fill(ak.border).frame(width: 1)
-            content
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Sidebar()
+                Rectangle().fill(ak.border).frame(width: 1)
+                content
+            }
+            // 任务条走布局，不做浮层：浮层一旦算偏就整条跑到窗口外，等于没有
+            JobOverlay()
         }
         .background(ak.bg)
         .overlay(alignment: .bottom) { ToastOverlay() }
@@ -430,6 +434,18 @@ private struct ToolRowView: View {
 
             Spacer(minLength: 12)
 
+            // 点完「更新」就地给回执：按钮灰掉 + 行内显示百分比，
+            // 否则用户只能盯着没反应的按钮猜自己点没点上
+            if let job = state.job, job.title.contains(entry.name) {
+                HStack(spacing: 5) {
+                    ProgressView().scaleEffect(0.45).frame(width: 12, height: 12)
+                    Text(job.progress.map { "\(Int(($0 * 100).rounded()))%" } ?? "处理中…")
+                        .font(AKFont.sans(11))
+                        .foregroundColor(ak.accent)
+                        .monospacedDigit()
+                }
+            }
+
             HStack(spacing: 8) {
                 if entry.isRuntimeOnly {
                     Button("登记到本机清单") { state.registerTool(bundleId: entry.id) }
@@ -478,6 +494,7 @@ private struct ToolRowView: View {
                 .menuIndicator(.hidden)
                 .frame(width: 22)
             }
+            .disabled(state.job != nil)
             .padding(.top, 1)
         }
         .padding(.vertical, 16)
@@ -559,8 +576,19 @@ private struct UpdatesPage: View {
                                     }
                                 }
                                 Spacer()
-                                Button("更新") { state.install(entry, isUpdate: true) }
-                                    .buttonStyle(AKPrimaryButtonStyle())
+                                if let job = state.job, job.title.contains(entry.name) {
+                                    HStack(spacing: 6) {
+                                        ProgressView().scaleEffect(0.45).frame(width: 12, height: 12)
+                                        Text(job.progress.map { "\(Int(($0 * 100).rounded()))%" } ?? "更新中…")
+                                            .font(AKFont.sans(12))
+                                            .foregroundColor(ak.accent)
+                                            .monospacedDigit()
+                                    }
+                                } else {
+                                    Button("更新") { state.install(entry, isUpdate: true) }
+                                        .buttonStyle(AKPrimaryButtonStyle())
+                                        .disabled(state.job != nil)
+                                }
                             }
                             .padding(.vertical, 18)
                             AKHairline()
@@ -1351,10 +1379,12 @@ private struct ToolDetailSheet: View {
                     if entry.updateAvailable {
                         Button("更新到 \(entry.latest?.version ?? "")") { state.install(entry, isUpdate: true) }
                             .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                            .disabled(state.job != nil)
                     }
                     if entry.spec?.source != nil {
                         Button("从源码重建") { state.rebuild(entry) }
                             .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                            .disabled(state.job != nil)
                     }
                     if entry.isInstalled {
                         Button("卸载") { confirmUninstall = true }
@@ -1532,26 +1562,79 @@ private struct ToastOverlay: View {
     }
 }
 
-// MARK: - 任务浮层
+// MARK: - 任务条
 
+/// 下载 / 安装的进度条，贴在窗口底部当状态条用。
+///
+/// 为什么不做浮动卡片：浮层不占布局，一旦位置算偏（快照里实测能整条跑到窗口外）
+/// 就是「点了更新什么都没发生」。做成布局里的一条，永远不会被裁掉。
+///
+/// 以前连这条都没有 —— 只写了 `job.detail` 字符串却从没插进任何界面，
+/// 用户点「更新」后屏幕一动不动，自然以为按钮没生效。
 struct JobBar: View {
-    @EnvironmentObject var state: AppState
     @Environment(\.ak) private var ak
+    var job: AppState.Job
+    var compact: Bool = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Group {
+                if job.progress == nil {
+                    ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(ak.accent)
+                        .frame(width: 14, height: 14)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(job.title)
+                        .font(AKFont.sans(11.5, weight: .medium))
+                        .foregroundColor(ak.ink)
+                        .lineLimit(1)
+                    Spacer(minLength: 6)
+                    if let p = job.progress {
+                        Text("\(Int((p * 100).rounded()))%")
+                            .font(AKFont.mono(10.5))
+                            .foregroundColor(ak.inkSoft)
+                            .monospacedDigit()
+                    }
+                }
+                if let p = job.progress {
+                    ProgressView(value: min(max(p, 0), 1))
+                        .progressViewStyle(.linear)
+                        .tint(ak.accent)
+                        .scaleEffect(x: 1, y: 0.65, anchor: .center)
+                }
+                Text(job.detail)
+                    .font(AKFont.sans(10.5))
+                    .foregroundColor(ak.inkSoft)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, compact ? 12 : 18)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background(ak.surface)
+        .overlay(alignment: .top) {
+            Rectangle().fill(ak.border).frame(height: 0.5)
+        }
+        .animation(.easeOut(duration: 0.12), value: job.progress)
+    }
+}
+
+/// 贴在窗口底部的任务条（没任务时什么都不画）
+struct JobOverlay: View {
+    @EnvironmentObject var state: AppState
 
     var body: some View {
         if let job = state.job {
-            HStack(spacing: 10) {
-                ProgressView().scaleEffect(0.55).frame(width: 16, height: 16)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(job.title).font(AKFont.sans(11.5, weight: .medium)).foregroundColor(ak.ink)
-                    Text(job.detail).font(AKFont.sans(10.5)).foregroundColor(ak.inkSoft).lineLimit(1)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(ak.surface))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(ak.border, lineWidth: 0.5))
+            JobBar(job: job)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 }

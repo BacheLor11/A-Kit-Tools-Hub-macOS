@@ -78,8 +78,21 @@ struct ToolEntity: Identifiable {
     var layoutId: String { entry?.id ?? id }
     /// 能在面板里展开完整界面
     var hasSurface: Bool { plugin != nil }
+    /// 显示的版本号。
+    ///
+    /// **磁盘是真相**：插件是 dlopen 进来的，更新完 app 而插件还活在内存里时，
+    /// `plugin.record.version` 仍然是旧值 —— 以前优先读它，于是「更新完了还显示老版本」。
+    /// 现在以装好的 app 为准，只有插件比磁盘还新（插件已重载、扫描没跟上）时才用插件的。
     var version: String? {
-        plugin?.record.version ?? entry?.installed?.version
+        let disk = entry?.installed?.version
+        let mem = plugin?.record.version
+        switch (disk, mem) {
+        case let (d?, m?):
+            return AKVersion(m, build: 0) > AKVersion(d, build: 0) ? m : d
+        case let (d?, nil): return d
+        case let (nil, m?): return m
+        default: return nil
+        }
     }
     var updateAvailable: Bool { entry?.updateAvailable == true }
 
@@ -164,7 +177,27 @@ enum ToolEntityIndex {
             ))
         }
 
-        return result.sorted { a, b in
+        // 最后一层兜底：同一个 id（bundleId）只留一条。
+        // 清单层已经去重过，但插件 / 运行时兜底也可能跟条目撞上同一个工具 ——
+        // 两处各画一张卡，用户看到的就是「装了俩，版本一模一样」。
+        var deduped: [ToolEntity] = []
+        var indexById: [String: Int] = [:]
+        for e in result {
+            guard let i = indexById[e.id] else {
+                indexById[e.id] = deduped.count
+                deduped.append(e)
+                continue
+            }
+            var kept = deduped[i]
+            if kept.entry == nil { kept.entry = e.entry }
+            if kept.plugin == nil { kept.plugin = e.plugin }
+            if kept.legacy == nil { kept.legacy = e.legacy }
+            if kept.name.isEmpty { kept.name = e.name }
+            kept.pluginDisabled = kept.pluginDisabled && e.pluginDisabled
+            deduped[i] = kept
+        }
+
+        return deduped.sorted { a, b in
             if a.hasSurface != b.hasSurface { return a.hasSurface }
             if a.isInstalled != b.isInstalled { return a.isInstalled }
             return a.name.localizedStandardCompare(b.name) == .orderedAscending

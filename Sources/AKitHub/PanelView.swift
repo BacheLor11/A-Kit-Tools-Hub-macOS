@@ -82,15 +82,22 @@ private struct PanelBody: View {
     // MARK: 布局
 
     var body: some View {
-        HStack(spacing: 0) {
-            nav
-                .frame(width: navWidth)
-            Rectangle().fill(ak.border).frame(width: 1)
-            content
-                .frame(width: contentWidth)
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                nav
+                    .frame(width: navWidth)
+                Rectangle().fill(ak.border).frame(width: 1)
+                content
+                    .frame(width: contentWidth)
+            }
+            // 面板里也走布局：下载时底部多一条，窗口尺寸不变
+            if let job = state.job {
+                JobBar(job: job, compact: true)
+            }
         }
         .frame(width: totalWidth, height: totalHeight)
         .background(ak.bg)
+        .animation(.easeInOut(duration: 0.18), value: state.job)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)

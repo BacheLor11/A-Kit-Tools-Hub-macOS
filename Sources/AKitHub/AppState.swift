@@ -169,20 +169,149 @@ final class AppState: ObservableObject {
     //   · imported.json   → 粘网址装进来的，带来源，能继续查更新
     // 三者都当成「清单的一部分」，后面安装/更新/体检走完全一样的流程。
 
-    var effectiveManifest: Manifest? {
-        var tools = manifest?.tools ?? []
+    var effectiveManifest: Manifest? { buildEffectiveManifest().manifest }
 
-        // 本机私有登记：同 id 覆盖，新的追加
-        for local in localTools {
-            if let i = tools.firstIndex(where: { $0.id == local.id }) { tools[i] = local }
-            else { tools.append(local) }
+    /// 三源合并 + **按 bundleId 去重**，同时把被丢掉的那份 id 记成 alias。
+    ///
+    /// 为什么非去重不可：同一个工具可能既有「粘链接装」的登记（id 取自工具自己的
+    /// akit.json，比如 `a-key-stats`），又被 SDK 自动登记过一次（id 由 bundleId 推导，
+    /// 比如 `akeystats`）。两份 spec 的 bundleId 一样、id 不同，合并出来就是两张卡，
+    /// 版本还都是新的 —— 用户只会以为自己装了两遍。
+    ///
+    /// 优先级：远端清单 > 粘链接装的 > 本机私有登记。
+    /// 后两者被去重时不是简单丢掉，而是把「下载地址 / 本地源码」这类能力补进留下的那条。
+    func buildEffectiveManifest() -> (manifest: Manifest?, aliases: [String: String]) {
+        var tools: [ToolSpec] = []
+        var indexByBundle: [String: Int] = [:]
+        var aliases: [String: String] = [:]
+
+        func put(_ spec: ToolSpec) {
+            let key = spec.bundleId.lowercased()
+            if let i = indexByBundle[key] {
+                if tools[i].id != spec.id { aliases[spec.id] = tools[i].id }
+                if tools[i].source == nil { tools[i].source = spec.source }
+                if tools[i].channels.isEmpty { tools[i].channels = spec.channels }
+                return
+            }
+            indexByBundle[key] = tools.count
+            tools.append(spec)
         }
 
-        let existing = Set(tools.map(\.id))
-        let extra = imported.filter { !existing.contains($0.id) }.map { $0.spec() }
-        if tools.isEmpty && extra.isEmpty { return nil }
-        tools.append(contentsOf: extra)
-        return Manifest(schemaVersion: 1, generatedAt: manifest?.generatedAt, tools: tools)
+        // ① 远端清单：A-Kit 自己的版本信息在这，优先级最高
+        for t in manifest?.tools ?? [] { put(t) }
+
+        // ② 粘链接装的：带着真实下载地址，「更新」按钮全靠它
+        for imp in imported {
+            let spec = imp.spec()
+            if let i = indexByBundle[spec.bundleId.lowercased()] {
+                var merged = tools[i]
+                if merged.id != spec.id { aliases[spec.id] = merged.id }
+                merged.channels = spec.channels
+                merged.repo = spec.repo ?? merged.repo
+                merged.icon = spec.icon ?? merged.icon
+                merged.article = spec.article ?? merged.article
+                if (merged.tagline ?? "").isEmpty { merged.tagline = spec.tagline }
+                tools[i] = merged
+                continue
+            }
+            put(spec)
+        }
+
+        // ③ 本机私有登记：只补「这台机器才有的东西」（Dev 源码路径），不抢 id
+        for local in localTools {
+            if let i = tools.firstIndex(where: { $0.id == local.id }) {
+                if tools[i].source == nil { tools[i].source = local.source }
+                if tools[i].channels.isEmpty { tools[i].channels = local.channels }
+                continue
+            }
+            if let i = indexByBundle[local.bundleId.lowercased()] {
+                if tools[i].source == nil { tools[i].source = local.source }
+                if tools[i].id != local.id { aliases[local.id] = tools[i].id }
+                continue
+            }
+            put(local)
+        }
+
+        guard !tools.isEmpty else { return (nil, aliases) }
+        return (Manifest(schemaVersion: 1, generatedAt: manifest?.generatedAt, tools: tools), aliases)
+    }
+
+    /// 去重之后，layout.json 里指向「旧 id」的分组 / 落点 / 面板形态要迁到留下的那个 id。
+    /// 不迁的话，用户之前在旧 id 上做的开关会静默失效。
+    private func migrateLayout(aliases: [String: String]) {
+        guard !aliases.isEmpty else { return }
+        var next = layout
+        var changed = false
+
+        for (alias, canonical) in aliases where alias != canonical {
+            for i in next.groups.indices where next.groups[i].items.contains(alias) {
+                next.groups[i].items.removeAll { $0 == alias }
+                if !next.groups[i].items.contains(canonical) { next.groups[i].items.append(canonical) }
+                changed = true
+            }
+            if let s = next.slot?[alias] {
+                var m = next.slot ?? [:]
+                if m[canonical] == nil { m[canonical] = s }
+                m.removeValue(forKey: alias)
+                next.slot = m
+                changed = true
+            }
+            if let d = next.display?[alias] {
+                var m = next.display ?? [:]
+                if m[canonical] == nil { m[canonical] = d }
+                m.removeValue(forKey: alias)
+                next.display = m
+                changed = true
+            }
+            if next.hidden.contains(alias) {
+                if !next.hidden.contains(canonical) { next.hidden.append(canonical) }
+                next.hidden.removeAll { $0 == alias }
+                changed = true
+            }
+            next.forget(alias)
+        }
+
+        guard changed else { return }
+        layout = next
+        layout.save()
+        AKLogInfo("layout", "迁移 \(aliases.count) 个旧 id：\(aliases)")
+    }
+
+    /// 清掉 layout 里已经指向不到任何工具的死 id（比如被移出/去重掉的插件）。
+    private func pruneLayout() {
+        var alive = Set<String>()
+        for e in entries {
+            alive.insert(e.id)
+            if let b = e.installed?.bundleId { alive.insert(b) }
+            if let b = e.spec?.bundleId { alive.insert(b) }
+        }
+        for p in pluginManager.plugins { alive.insert(p.id); alive.insert(p.record.id) }
+        for e in runtimeEntries { alive.insert(e.id) }
+        guard !alive.isEmpty else { return }
+
+        var next = layout
+        var changed = false
+        let deadItems = next.groups.flatMap { $0.items }.filter { !alive.contains($0) }
+        if !deadItems.isEmpty {
+            for i in next.groups.indices {
+                next.groups[i].items.removeAll { !alive.contains($0) }
+            }
+            changed = true
+        }
+        let deadHidden = next.hidden.filter { !alive.contains($0) }
+        if !deadHidden.isEmpty { next.hidden.removeAll { !alive.contains($0) }; changed = true }
+        if let slot = next.slot {
+            let filtered = slot.filter { alive.contains($0.key) }
+            if filtered.count != slot.count { next.slot = filtered; changed = true }
+        }
+        if let display = next.display {
+            let filtered = display.filter { alive.contains($0.key) }
+            if filtered.count != display.count { next.display = filtered; changed = true }
+        }
+        guard changed else { return }
+        layout = next
+        layout.save()
+        AKLogInfo("layout", "清掉死 id：\(deadItems + deadHidden)")
     }
 
     var importedIds: Set<String> { Set(imported.map(\.id)) }
@@ -392,7 +521,8 @@ final class AppState: ObservableObject {
         let settings = self.settings
         imported = ImportedStore.load()
         localTools = ManifestStore.loadLocal()
-        let m = effectiveManifest
+        let built = buildEffectiveManifest()
+        let m = built.manifest
         var known = Set((m?.tools ?? []).map(\.bundleId))
         for t in imported { known.insert(t.bundleId) }
         let apps = await Task.detached(priority: .userInitiated) {
@@ -400,6 +530,11 @@ final class AppState: ObservableObject {
         }.value
         entries = Registry.merge(manifest: m, installed: apps,
                                  channel: settings.channel, fallbackIds: [])
+
+        // 先去重留下的 id 迁移（旧 id 上的分组 / 落点搬到新 id），再清死 id，
+        // 最后才做「未分组就塞第一个组」—— 顺序反了会把刚清掉的死 id 又写回去。
+        migrateLayout(aliases: built.aliases)
+        pruneLayout()
 
         // 新装 / 新登记的工具默认放进第一个分组，不然菜单栏页会一堆「未分组」
         if let first = layout.groups.first {
@@ -508,13 +643,29 @@ final class AppState: ObservableObject {
 
     func confirmImport() {
         guard let c = importCandidate else { return }
-        job = Job(title: "安装 \(c.name)", detail: "准备下载…")
+        guard job == nil else {
+            showToast("上一个任务还在跑，等它结束", ok: false)
+            return
+        }
+        job = Job(title: "安装 \(c.name) · \(c.version)", detail: "准备下载…")
         Task {
             do {
                 let record = try await ImportInstaller.install(
-                    c, into: targetDirectory(), backupRoot: AKPaths.backups) { msg in
-                        Task { @MainActor in self.job?.detail = msg }
-                    }
+                    c, into: targetDirectory(), backupRoot: AKPaths.backups,
+                    progress: { msg in
+                        Task { @MainActor in
+                            self.job?.progress = nil
+                            self.job?.detail = msg
+                        }
+                    },
+                    onDownload: { p in
+                        Task { @MainActor in
+                            guard var j = self.job else { return }
+                            j.progress = p.fraction
+                            j.detail = "下载中 · \(p.text)"
+                            self.job = j
+                        }
+                    })
                 job = nil
                 importCandidate = nil
                 showImportSheet = false
@@ -597,6 +748,10 @@ final class AppState: ObservableObject {
     }
 
     func install(_ entry: ToolEntry, isUpdate: Bool) {
+        guard job == nil else {
+            showToast("上一个任务还在跑，等它结束", ok: false)
+            return
+        }
         guard let spec = entry.spec else {
             showToast("这个工具还没登记到清单里", ok: false)
             return
@@ -607,13 +762,28 @@ final class AppState: ObservableObject {
             return
         }
 
-        job = Job(title: "\(isUpdate ? "更新" : "安装") \(spec.name)", detail: "下载中…")
+        // 更的是 A-Kit 自己？那装完必须重启才看得到新版本 ——
+        // 以前替换脚本会一直等这个进程退出，用户看到的就是「更新了还是老版」。
+        let hostId = Bundle.main.bundleIdentifier ?? "com.aibao.AKitHub"
+        let isSelf = spec.bundleId == hostId
+
+        job = Job(title: "\(isUpdate ? "更新" : "安装") \(spec.name) · \(channel.version)",
+                  detail: "连接中…")
         Task {
             do {
                 let file = try await Installer.download(
                     from: url,
-                    to: AKPaths.downloads.appendingPathComponent("\(spec.id)-\(channel.version).zip"))
+                    to: AKPaths.downloads.appendingPathComponent("\(spec.id)-\(channel.version).zip"),
+                    onProgress: { p in
+                        Task { @MainActor in
+                            guard var j = self.job else { return }
+                            j.progress = p.fraction
+                            j.detail = "下载中 · \(p.text)"
+                            self.job = j
+                        }
+                    })
 
+                job?.progress = nil
                 if let expected = channel.sha256, !expected.isEmpty {
                     job?.detail = "校验完整性…"
                     let actual = try Installer.sha256(at: file)
@@ -626,17 +796,24 @@ final class AppState: ObservableObject {
                 let stage = AKPaths.downloads.appendingPathComponent("stage-\(spec.id)")
                 let app = try Installer.unzip(file, into: stage)
 
-                job?.detail = "安装到 \(settings.installDirectory)…"
+                job?.detail = isSelf ? "准备替换 A-Kit…" : "安装到 \(settings.installDirectory)…"
                 let backupRoot = AKPaths.backups
                 let installedURL: URL
-                if entry.isInstalled, let current = entry.installed, Scanner.isRunning(bundleId: current.bundleId) {
+                // 目标在跑（包括 A-Kit 自己）就走延迟替换；否则直接覆盖
+                let current = isSelf ? Scanner.readApp(at: Bundle.main.bundleURL) : entry.installed
+                let running = current.map { Scanner.isRunning(bundleId: $0.bundleId) } ?? false
+                var deferred = false
+                if let current, running {
                     // 目标在跑：先落到临时位置，再交给延迟脚本替换
                     let staged = try Installer.install(app, into: stage.appendingPathComponent("final"),
                                                        backupTo: backupRoot, expectedBundleId: spec.bundleId)
                     try Installer.replaceWhileRunning(newApp: staged, target: current.path, relaunch: true)
                     installedURL = current.path
+                    deferred = !isSelf
                 } else {
-                    installedURL = try Installer.install(app, into: targetDirectory(),
+                    // 更自己的时候装回「正在跑的那个 .app 所在目录」，不能按设置另装一份
+                    let dir = isSelf ? Bundle.main.bundleURL.deletingLastPathComponent() : targetDirectory()
+                    installedURL = try Installer.install(app, into: dir,
                                                          backupTo: backupRoot.appendingPathComponent(spec.name),
                                                          expectedBundleId: spec.bundleId)
                 }
@@ -646,14 +823,52 @@ final class AppState: ObservableObject {
 
                 AKLogInfo("install", "\(spec.name) -> \(installedURL.path)")
                 job = nil
-                showToast("\(spec.name) \(isUpdate ? "已更新到" : "已安装") \(channel.version)", ok: true)
+
+                if isSelf {
+                    // 脚本正在等我们退出：退出后它才替换，然后自己 open 新版本
+                    showToast("A-Kit \(channel.version) 已就位，正在重启…", ok: true)
+                    await rescan()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { NSApp.terminate(nil) }
+                    return
+                }
+
+                if deferred {
+                    // 工具自己还在跑：文件替换是延后的，这时候说「已更新」是骗人
+                    showToast("\(spec.name) \(channel.version) 已下载，退出 \(spec.name) 后自动替换", ok: true)
+                } else {
+                    showToast("\(spec.name) \(isUpdate ? "已更新到" : "已安装") \(channel.version)", ok: true)
+                }
                 await rescan()
                 afterInstall(installedURL)
+                if deferred {
+                    watchDeferredSwap(name: spec.name, app: installedURL,
+                                      bundleId: spec.bundleId, version: channel.version)
+                }
             } catch {
                 job = nil
                 AKLogInfo("install", "失败：\(error.localizedDescription)")
                 showToast(error.localizedDescription, ok: false)
             }
+        }
+    }
+
+    /// 延迟替换期间盯着磁盘：脚本把新包换上之后，重载插件并刷新列表。
+    /// 不然工具退出了、文件也换了，A-Kit 还挂着旧插件、旧版本号。
+    private func watchDeferredSwap(name: String, app: URL, bundleId: String, version: String) {
+        Task {
+            let deadline = Date().addingTimeInterval(120)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let now = Scanner.readApp(at: app) else { continue }
+                if AKVersion(now.version) >= AKVersion(version) {
+                    AKLogInfo("install", "\(name) 已替换为 \(now.version)，重载插件")
+                    pluginManager.reload()
+                    await rescan()
+                    showToast("\(name) 已替换为 \(now.version)", ok: true)
+                    return
+                }
+            }
+            AKLogInfo("install", "\(bundleId) 延迟替换等待超时（工具可能一直没退出）")
         }
     }
 

@@ -17,6 +17,9 @@ struct ImportSheet: View {
             inputRow
             AKHairline()
             content
+            if let job = state.job {
+                JobBar(job: job, compact: true)
+            }
             AKHairline()
             footer
         }

@@ -164,13 +164,23 @@ public struct ToolEntry: Identifiable {
 
 public enum Registry {
     /// 清单 + 本机扫描结果合并。清单里没有但本机装了（且命中 bundle 前缀）的，也算进来。
+    ///
+    /// **同一个 bundleId 只会产生一条**：清单来源有三份（远端 / 本机私有登记 / 粘链接装的），
+    /// 同一个工具可能被登记两次、id 还不一样（`akeystats` vs `a-key-stats`）。
+    /// 以前照单全收，界面上就是同一个工具出现两遍、版本还一样 —— 看着像重复安装。
     public static func merge(manifest: Manifest?, installed: [InstalledApp],
                              channel: String = "stable",
                              fallbackIds: [String] = []) -> [ToolEntry] {
         var entries: [ToolEntry] = []
         var usedBundleIds = Set<String>()
+        var seenSpecs = Set<String>()
 
         for spec in manifest?.tools ?? [] {
+            // 同一个 bundleId 被两份清单各写了一次：留第一条（优先级由调用方排好）
+            let key = spec.bundleId.lowercased()
+            if !key.isEmpty, seenSpecs.contains(key) { continue }
+            seenSpecs.insert(key)
+
             let app = installed.first { $0.bundleId == spec.bundleId }
                 ?? installed.first { $0.name.lowercased() == spec.name.lowercased() }
             if let app { usedBundleIds.insert(app.bundleId) }
