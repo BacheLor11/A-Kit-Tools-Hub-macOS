@@ -156,7 +156,6 @@ final class AppState: ObservableObject {
             await rescan()
             if settings.autoCheckUpdates {
                 await checkUpdates(silent: true)
-                await checkGitHubUpdates(silent: true)
             }
             startDevWatchIfNeeded()
         }
@@ -444,10 +443,16 @@ final class AppState: ObservableObject {
         await loadManifest()
         await rescan()
         await checkUpdates(silent: true)
-        await checkGitHubUpdates(silent: true)
     }
 
     func checkUpdates(silent: Bool) async {
+        // 先把「粘链接装的工具」各自去问一遍 GitHub 的最新 Release。
+        //
+        // 少了这一步，点「检查更新」只刷新了 A-Kit 自己的清单，第三方工具的
+        // 版本号永远停在 import 那天的值 —— 于是在别的机器上更新了工具、发了
+        // Release，这边还是「已经是最新版本」。
+        let github = await checkGitHubUpdates(silent: silent)
+
         await loadManifest()
         let settings = self.settings
         imported = ImportedStore.load()
@@ -461,7 +466,11 @@ final class AppState: ObservableObject {
                                  channel: settings.channel, fallbackIds: [])
         if !silent {
             let n = entries.filter { $0.updateAvailable }.count
-            showToast(n == 0 ? "已经是最新版本" : "发现 \(n) 个更新", ok: true)
+            var msg = n == 0 ? "已经是最新版本" : "发现 \(n) 个更新"
+            if github.failed > 0 {
+                msg += "；\(github.failed) 个工具没查成（\(github.error ?? "未知原因")）"
+            }
+            showToast(msg, ok: github.failed == 0)
         }
     }
 
@@ -526,12 +535,21 @@ final class AppState: ObservableObject {
         showImportSheet = false
     }
 
-    /// 只检查从 GitHub 装的工具：拉最新 release，tag 变了就把下载地址换掉
-    func checkGitHubUpdates(silent: Bool) async {
+    /// 只检查从 GitHub 装的工具：拉最新 release，tag 变了就把下载地址换掉。
+    ///
+    /// 返回值是「有几个没查成 + 第一条失败原因」。调用方要把它报出来 ——
+    /// 悄悄失败是最坑的：明明没查成，界面上却写「已经是最新版本」。
+    @discardableResult
+    func checkGitHubUpdates(silent: Bool) async -> (failed: Int, error: String?) {
+        // 静默检查（启动 / 刷新）5 分钟内不重复打 GitHub；手动点「检查更新」不设限 ——
+        // 用户按下按钮就是想立刻知道最新状态，拿缓存糊弄他没意义。
+        if silent, let last = lastImportCheck, Date().timeIntervalSince(last) < 300 { return (0, nil) }
         var list = ImportedStore.load()
-        guard !list.isEmpty else { return }
+        guard !list.isEmpty else { return (0, nil) }
         let token = settings.githubToken
         var changed = false
+        var failed = 0
+        var firstError: String?
 
         for i in list.indices {
             guard let owner = list[i].owner, let repo = list[i].repo else { continue }
@@ -547,6 +565,8 @@ final class AppState: ObservableObject {
                 changed = true
                 AKLogInfo("import", "\(owner)/\(repo) 有新版本 \(rel.tag)")
             } catch {
+                failed += 1
+                if firstError == nil { firstError = error.localizedDescription }
                 AKLogInfo("import", "检查 \(owner)/\(repo) 失败：\(error.localizedDescription)")
             }
         }
@@ -558,6 +578,7 @@ final class AppState: ObservableObject {
             await rescan()
             if !silent { showToast("来自 GitHub 的工具已刷新", ok: true) }
         }
+        return (failed, firstError)
     }
 
     /// 忘掉这个来源（不删 app）
