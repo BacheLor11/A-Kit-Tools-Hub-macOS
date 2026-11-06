@@ -337,6 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     // MARK: 生命周期
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installMainMenu()
         applyDockPolicy()
         setupStatusItem()
         setupWindow()
@@ -360,6 +361,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.state.openPluginWindow(pid)
             }
         }
+    }
+
+    // MARK: 主菜单
+
+    /// 装一份最小可用的主菜单。
+    ///
+    /// AppKit 里「剪切 / 拷贝 / 粘贴 / 全选」不是输入框自己认的快捷键，而是菜单项的
+    /// key equivalent 沿 responder chain 派发下去。纯 SwiftPM 起来的 AppKit app 如果
+    /// 没有 `NSApp.mainMenu`，⌘V 就没有接收者 —— 表现就是「输入框能打字，粘贴毫无反应」。
+    ///
+    /// A-Kit 默认是 `.accessory`（不占 Dock、不显示菜单栏），但菜单仍然必须装：
+    /// 快捷键的派发靠它，跟菜单栏显不显示是两件事。
+    private func installMainMenu() {
+        func entry(_ title: String, _ action: Selector?, _ key: String = "",
+                   _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = mods
+            return item
+        }
+
+        let main = NSMenu()
+
+        // 应用
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(entry("关于 A-Kit", #selector(NSApplication.orderFrontStandardAboutPanel(_:))))
+        appMenu.addItem(.separator())
+        appMenu.addItem(entry("隐藏 A-Kit", #selector(NSApplication.hide(_:)), "h"))
+        appMenu.addItem(entry("隐藏其他", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))
+        appMenu.addItem(entry("显示全部", #selector(NSApplication.unhideAllApplications(_:))))
+        appMenu.addItem(.separator())
+        appMenu.addItem(entry("退出 A-Kit", #selector(NSApplication.terminate(_:)), "q"))
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        // 编辑：少了这一段，⌘X / ⌘C / ⌘V / ⌘A 全都是死的
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "编辑")
+        edit.addItem(entry("撤销", Selector(("undo:")), "z"))
+        edit.addItem(entry("重做", Selector(("redo:")), "Z"))
+        edit.addItem(.separator())
+        edit.addItem(entry("剪切", #selector(NSText.cut(_:)), "x"))
+        edit.addItem(entry("拷贝", #selector(NSText.copy(_:)), "c"))
+        edit.addItem(entry("粘贴", #selector(NSText.paste(_:)), "v"))
+        edit.addItem(entry("全选", #selector(NSText.selectAll(_:)), "a"))
+        editItem.submenu = edit
+        main.addItem(editItem)
+
+        // 窗口
+        let winItem = NSMenuItem()
+        let win = NSMenu(title: "窗口")
+        win.addItem(entry("最小化", #selector(NSWindow.performMiniaturize(_:)), "m"))
+        win.addItem(entry("关闭", #selector(NSWindow.performClose(_:)), "w"))
+        winItem.submenu = win
+        main.addItem(winItem)
+
+        NSApp.mainMenu = main
+        AKLogInfo("app", "主菜单已装：编辑 \(edit.items.count) 项（⌘V 靠它派发）")
     }
 
     /// 加载插件。
