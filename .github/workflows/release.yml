@@ -69,9 +69,23 @@ jobs:
               repo = os.environ.get("GITHUB_REPOSITORY", "")
               out += ["", f"**完整对比**：https://github.com/{repo}/compare/{prev}...v{version}"]
 
+          # 给 manifest.json 用的那一句话摘要：取这一段里第一条加粗标题，
+          # 取不到就用提交标题。以前直接用 `git log -1 --pretty=%s`，
+          # 光发一次文档提交也会把它带进去，读起来驴唇不对马嘴。
+          summary = ""
+          if section:
+              m2 = re.search(r"^- \*\*(.+?)\*\*", section, re.M)
+              if m2:
+                  summary = m2.group(1).strip()
+          if not summary:
+              summary = subprocess.run(["git", "log", "-1", "--pretty=%s"],
+                                       capture_output=True, text=True).stdout.strip()
+          pathlib.Path("build/SUMMARY.txt").write_text(summary + "\n", encoding="utf-8")
+
           print("\n".join(out))
           PY
           cat build/RELEASE_NOTES.md
+          echo "摘要：$(cat build/SUMMARY.txt)"
 
       - name: 打包
         run: |
@@ -91,7 +105,7 @@ jobs:
             --version "$VERSION" \
             --url "$URL" \
             --sha256 "$SHA" \
-            --notes "$(git log -1 --pretty=%s)" \
+            --notes "$(cat build/SUMMARY.txt)" \
             --out build/manifest.json
           cat build/manifest.json
 
