@@ -54,8 +54,30 @@ cp "$BUILD_DIR/MenuBarIcon.png" "$APP/Contents/Resources/MenuBarIcon.png"
 cp Resources/seed-manifest.json "$APP/Contents/Resources/seed-manifest.json"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "▸ 签名 (ad-hoc)…"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  ! 签名失败，先跳过"
+echo "▸ 签名…"
+# 输入监控（TCC ListenEvent）的授权记录绑在签名身份上。
+# ad-hoc 签名的代码要求退化成 cdhash H"…"，**每编译一次就变一次**，
+# 于是系统设置里「A-Kit」的开关还亮着，键盘事件却一条都不进来 ——
+# 必须去输入监控里把 A-Kit 用「−」删掉、重启再授权一次才会恢复。
+# 换成固定证书后，代码要求变成 identifier + team，重建/覆盖安装都不会失效。
+#
+# 这里故意不加 --options runtime：A-Kit 要 dlopen 各工具自己的插件，
+# 开了 hardened runtime 就会启用 library validation，别的 team / ad-hoc 签的插件会直接加载失败。
+if [ -z "${CODESIGN_ID:-}" ]; then
+    CODESIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -v CSSMERR | grep 'Apple Development' | head -1 | awk '{print $2}' || true)
+fi
+if [ -n "${CODESIGN_ID:-}" ] && [ "$CODESIGN_ID" != "-" ]; then
+    if codesign --force --deep --sign "$CODESIGN_ID" "$APP" 2>/dev/null; then
+        echo "  · 已签名：${CODESIGN_ID}（输入监控授权可跨构建保留）"
+    else
+        echo "  ! 证书签名失败，退回 ad-hoc（每次重建都要重新授权输入监控）"
+        codesign --force --deep --sign - "$APP"
+    fi
+else
+    codesign --force --deep --sign - "$APP"
+    echo "  · ad-hoc 签名（每次重建都要重新授权输入监控）"
+fi
 
 # 生成 gh 上传用的压缩包
 if [ "${1:-}" = "--release" ]; then
