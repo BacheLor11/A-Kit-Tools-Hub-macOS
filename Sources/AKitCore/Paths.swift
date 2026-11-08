@@ -19,6 +19,11 @@ public enum AKPaths {
     public static var localToolsFile: URL { support.appendingPathComponent("tools.local.json") }
     public static var backups: URL { support.appendingPathComponent("Backups", isDirectory: true) }
     public static var downloads: URL { support.appendingPathComponent("Downloads", isDirectory: true) }
+    /// 等待「运行中替换」的新版本暂存区。
+    ///
+    /// **不能放 Downloads**：装完那一层会被清掉，替换脚本还没跑到就找不到新包了
+    /// （0.5.10 及以前就是这么把 app 整个删没的）。
+    public static var swapStaging: URL { support.appendingPathComponent("Updates", isDirectory: true) }
     public static var logs: URL { support.appendingPathComponent("Logs", isDirectory: true) }
     /// 插件目录。里面放 `.akitplugin`，通常是软链指向 `xxx.app/Contents/PlugIns/…`
     public static var plugins: URL { support.appendingPathComponent("Plugins", isDirectory: true) }
@@ -28,7 +33,7 @@ public enum AKPaths {
     public static var crashSentinel: URL { support.appendingPathComponent("crash-sentinel.json") }
 
     public static func ensure() {
-        for dir in [support, backups, downloads, logs, plugins] {
+        for dir in [support, backups, downloads, swapStaging, logs, plugins] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

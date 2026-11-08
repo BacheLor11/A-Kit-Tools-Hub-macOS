@@ -22,6 +22,25 @@ struct AKitMain {
             return
         }
 
+        // 开发用：--swap-test <新版本.app> <目标.app> <要等的 pid>
+        // 走一遍真实的「运行中替换」：暂存 + 调度脚本（脚本会等 pid 退出再换包）
+        if let i = args.firstIndex(of: "--swap-test"), i + 3 < args.count {
+            let newApp = URL(fileURLWithPath: args[i + 1])
+            let target = URL(fileURLWithPath: args[i + 2])
+            let pid = Int32(args[i + 3]) ?? 0
+            do {
+                let bundleId = Bundle(url: target)?.bundleIdentifier ?? "test.swap"
+                let staged = try Installer.stageForSwap(newApp, bundleId: bundleId, version: "test")
+                try Installer.replaceWhileRunning(newApp: staged, target: target,
+                                                  relaunch: false, waitFor: pid)
+                print("swap scheduled: \(staged.path) -> \(target.path) (pid \(pid))")
+            } catch {
+                print("FAIL \(error.localizedDescription)")
+                exit(1)
+            }
+            exit(0)
+        }
+
         // 开发用：命令行把一个插件移出 A-Kit，等价于点界面上的「移出」
         if let i = args.firstIndex(of: "--remove-plugin"), i + 1 < args.count {
             _ = NSApplication.shared

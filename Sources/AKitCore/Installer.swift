@@ -287,19 +287,113 @@ public enum Installer {
 
     // MARK: 运行中替换
 
-    /// 目标 app 正在运行时，用延迟脚本完成替换（app 不能覆盖自己的 bundle）
-    public static func replaceWhileRunning(newApp: URL, target: URL, relaunch: Bool) throws {
+    /// 把新版本暂存到一个**不会被清理**的地方，等替换脚本用。
+    ///
+    /// 以前直接把 `Downloads/stage-xxx/final/X.app` 交给脚本，然后立刻
+    /// `removeItem(at: stage)` —— 脚本还在等进程退出，源已经被删了。
+    /// 等用户一退出，脚本 `rm -rf` 掉旧 app、再从空路径 ditto，结果就是
+    /// **app 直接从应用程序文件夹消失**（0.5.10 及以前的自更新就栽在这）。
+    public static func stageForSwap(_ app: URL, bundleId: String, version: String) throws -> URL {
+        AKPaths.ensure()
+        let dir = AKPaths.swapStaging.appendingPathComponent("\(bundleId)-\(version)", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(app.lastPathComponent)
+        let (code, out) = Shell.run("/usr/bin/ditto", [app.path, dest.path])
+        guard code == 0 else { throw InstallerError.installFailed("暂存新版本失败：\(out)") }
+        stripQuarantine(dest)
+        AKLogInfo("install", "staged \(dest.lastPathComponent) for swap at \(dir.path)")
+        return dest
+    }
+
+    /// 清掉过期的替换暂存（超过 2 天的，正常替换几分钟内就会自己删干净）
+    public static func cleanupSwapStaging() {
+        let fm = FileManager.default
+        guard let kids = try? fm.contentsOfDirectory(at: AKPaths.swapStaging,
+                                                     includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        for k in kids {
+            let d = (try? k.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+            if Date().timeIntervalSince(d) > 2 * 24 * 3600 {
+                try? fm.removeItem(at: k)
+                AKLogInfo("install", "清理过期暂存 \(k.lastPathComponent)")
+            }
+        }
+    }
+
+    /// 目标 app 正在运行时，用延迟脚本完成替换（app 不能覆盖自己的 bundle）。
+    ///
+    /// 脚本的硬要求：**任何一步失败都必须回滚，绝不能让目标消失**。
+    /// - 新版本目录不存在 → 什么都不动，直接退出；
+    /// - 先把旧版本 `mv` 成 `X.app.akit-old`（不是 `rm -rf`），拷成功才删；
+    /// - 拷贝失败或拷完没有 Info.plist → 删掉半成品、把 `.akit-old` 挪回来；
+    /// - `relaunch` 时无论成功失败都会 `open`，用户至少还能用旧版。
+    ///
+    /// - Parameter waitFor: 要等的进程 pid。给自己更新时传 `getpid()`；给别的工具更新时
+    ///   传它当前运行的 pid。传 0 才退回命令行匹配。
+    public static func replaceWhileRunning(newApp: URL, target: URL, relaunch: Bool,
+                                          waitFor pid: Int32 = 0) throws {
+        AKPaths.ensure()
+        let log = AKPaths.logs.appendingPathComponent("swap.log")
+        let marker = AKPaths.swapStaging.appendingPathComponent("last-swap.json")
+
         let script = """
         #!/bin/sh
+        # A-Kit 延迟替换脚本：等目标退出 → 换包。失败一律回滚。
         TARGET="\(target.path)"
         NEW="\(newApp.path)"
-        while pgrep -f "$TARGET/Contents/MacOS/" >/dev/null 2>&1; do sleep 0.3; done
-        sleep 0.2
-        rm -rf "$TARGET"
-        /usr/bin/ditto "$NEW" "$TARGET"
-        /usr/bin/xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
-        \(relaunch ? "open \"$TARGET\"" : "true")
+        PID=\(pid)
+        LOG="\(log.path)"
+        MARKER="\(marker.path)"
+        exec >>"$LOG" 2>&1
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') swap start pid=$PID target=$TARGET"
+
+        if [ ! -f "$NEW/Contents/Info.plist" ]; then
+          echo "ABORT 新版本不完整：$NEW"
+          echo '{"ok":false,"reason":"新版本文件缺失","target":"'"$TARGET"'"}' > "$MARKER"
+          rm -f "$0"; exit 2
+        fi
+
+        n=0
+        if [ "$PID" -gt 0 ] 2>/dev/null; then
+          while kill -0 "$PID" 2>/dev/null; do
+            n=$((n+1)); [ "$n" -gt 600 ] && { echo "ABORT 目标 180 秒未退出"; rm -f "$0"; exit 3; }
+            sleep 0.3
+          done
+        else
+          while pgrep -f "$TARGET/Contents/MacOS/" >/dev/null 2>&1; do
+            n=$((n+1)); [ "$n" -gt 600 ] && { echo "ABORT 目标 180 秒未退出"; rm -f "$0"; exit 3; }
+            sleep 0.3
+          done
+        fi
+        sleep 0.3
+
+        OLD="$TARGET.akit-old"
+        rm -rf "$OLD"
+        if [ -e "$TARGET" ]; then
+          if ! /bin/mv "$TARGET" "$OLD"; then
+            echo "ABORT 旧版本挪不动"
+            rm -f "$0"; exit 4
+          fi
+        fi
+
+        if /usr/bin/ditto "$NEW" "$TARGET" && [ -f "$TARGET/Contents/Info.plist" ]; then
+          /usr/bin/xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
+          rm -rf "$OLD"
+          echo "OK 替换成功 -> $TARGET"
+          echo '{"ok":true,"target":"'"$TARGET"'"}' > "$MARKER"
+          rc=0
+        else
+          echo "FAIL 拷贝失败，回滚旧版本"
+          rm -rf "$TARGET"
+          [ -e "$OLD" ] && /bin/mv "$OLD" "$TARGET"
+          echo '{"ok":false,"reason":"拷贝失败，已回滚","target":"'"$TARGET"'"}' > "$MARKER"
+          rc=5
+        fi
+
+        rm -rf "$(dirname "$NEW")"
+        \(relaunch ? "/usr/bin/open \"$TARGET\"" : "true")
         rm -f "$0"
+        exit $rc
         """
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent("akit-swap-\(UUID().uuidString.prefix(8)).sh")
@@ -310,7 +404,7 @@ public enum Installer {
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = [path.path]
         try p.run()
-        AKLogInfo("install", "swap scheduled -> \(target.path)")
+        AKLogInfo("install", "swap scheduled -> \(target.path)（新包 \(newApp.path)）")
     }
 
     // MARK: Dev 模式重建

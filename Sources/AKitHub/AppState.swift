@@ -152,6 +152,8 @@ final class AppState: ObservableObject {
 
         guard bootstrap else { return }
         Task {
+            Installer.cleanupSwapStaging()
+            reportLastSwap()
             await loadManifest()
             await rescan()
             if settings.autoCheckUpdates {
@@ -804,10 +806,17 @@ final class AppState: ObservableObject {
                 let running = current.map { Scanner.isRunning(bundleId: $0.bundleId) } ?? false
                 var deferred = false
                 if let current, running {
-                    // 目标在跑：先落到临时位置，再交给延迟脚本替换
-                    let staged = try Installer.install(app, into: stage.appendingPathComponent("final"),
-                                                       backupTo: backupRoot, expectedBundleId: spec.bundleId)
-                    try Installer.replaceWhileRunning(newApp: staged, target: current.path, relaunch: true)
+                    // 新版本先落到「不会被清理」的暂存区再交给脚本。
+                    // 以前放在 stage/ 里、调度完立刻删 stage —— 脚本等进程退出时源已经没了，
+                    // 于是 rm -rf 掉旧 app 后 ditto 失败，app 直接消失。
+                    let staged = try Installer.stageForSwap(app, bundleId: spec.bundleId,
+                                                             version: channel.version)
+                    // 等**具体进程**退出，比命令行匹配准：给别的工具更新时它可能不是用这个路径起的
+                    let pid: Int32 = isSelf ? getpid()
+                        : (NSRunningApplication.runningApplications(withBundleIdentifier: current.bundleId)
+                            .first?.processIdentifier ?? 0)
+                    try Installer.replaceWhileRunning(newApp: staged, target: current.path,
+                                                      relaunch: true, waitFor: pid)
                     installedURL = current.path
                     deferred = !isSelf
                 } else {
@@ -849,6 +858,23 @@ final class AppState: ObservableObject {
                 AKLogInfo("install", "失败：\(error.localizedDescription)")
                 showToast(error.localizedDescription, ok: false)
             }
+        }
+    }
+
+    /// 上次「运行中替换」的结果。失败了必须让用户知道 ——
+    /// 最坏的结局是新版没装成、界面上却一声不响。
+    private func reportLastSwap() {
+        let f = AKPaths.swapStaging.appendingPathComponent("last-swap.json")
+        guard let data = try? Data(contentsOf: f),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        try? FileManager.default.removeItem(at: f)
+        let target = obj["target"] as? String ?? ""
+        if (obj["ok"] as? Bool) == true {
+            AKLogInfo("install", "上次替换成功：\(target)")
+        } else {
+            let reason = obj["reason"] as? String ?? "未知原因"
+            AKLogInfo("install", "上次替换失败：\(reason)")
+            showToast("上次更新没装成（\(reason)），已保留旧版本", ok: false)
         }
     }
 
