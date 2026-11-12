@@ -150,12 +150,22 @@ enum ToolEntityIndex {
             ))
         }
 
-        // 只在插件里出现的（没有独立 app，或者 app 没被扫描到）
+        // 只在插件里出现的（没有独立 app，或者 app 还没被扫描到）
+        //
+        // 有 `appPath` 的插件其实是**双形态**：扫描是异步的，启动后头几秒 entry
+        // 还没到，它就被当成「仅插件」；等扫描完成又多出 entry，整行从一种布局
+        // 换成另一种（用户看到的就是「打开窗口」忽然变成了「打开」）。
+        // app 装在哪插件自己知道，直接补一条安装信息，让第一帧就是最终形态。
         for p in plugins where !usedPluginIds.contains(p.id) {
+            var synthesized: ToolEntry?
+            if let path = p.record.appPath,
+               let app = Scanner.readApp(at: URL(fileURLWithPath: path)) {
+                synthesized = ToolEntry(id: app.bundleId, spec: nil, installed: app, latest: nil)
+            }
             result.append(ToolEntity(
                 id: p.record.id,
                 name: p.record.displayName,
-                entry: nil,
+                entry: synthesized,
                 plugin: p,
                 legacy: connected[p.record.id],
                 pluginDisabled: false
@@ -189,7 +199,11 @@ enum ToolEntityIndex {
                 continue
             }
             var kept = deduped[i]
-            if kept.entry == nil { kept.entry = e.entry }
+            // 合成 entry（spec == nil）只用来撑住第一帧；真实条目到了要换掉，
+            // 否则「更新」按钮会因为没有 spec 而永远不出现。
+            if kept.entry == nil || (kept.entry?.spec == nil && e.entry?.spec != nil) {
+                if let incoming = e.entry { kept.entry = incoming }
+            }
             if kept.plugin == nil { kept.plugin = e.plugin }
             if kept.legacy == nil { kept.legacy = e.legacy }
             if kept.name.isEmpty { kept.name = e.name }

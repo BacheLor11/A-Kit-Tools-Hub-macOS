@@ -307,7 +307,7 @@ private struct ToolsPage: View {
         .sheet(isPresented: Binding(get: { state.selectedId != nil }, set: { if !$0 { state.selectedId = nil } })) {
             if let id = state.selectedId, let entity = state.entity(id) {
                 if let entry = entity.entry {
-                    ToolDetailSheet(entry: entry)
+                    ToolDetailSheet(entry: entry, plugin: entity.plugin)
                         .environmentObject(state)
                 } else if let plugin = entity.plugin {
                     PluginDetailSheet(plugin: plugin, entity: entity)
@@ -451,7 +451,15 @@ private struct ToolRowView: View {
                     Button("登记到本机清单") { state.registerTool(bundleId: entry.id) }
                         .buttonStyle(AKPrimaryButtonStyle(filled: false))
                 }
-                if entry.isInstalled {
+                // 主操作跟着**运行形态**走，不跟着「有没有清单条目」走。
+                //
+                // 启动后扫描 / 自动登记是异步的，`entity` 会先只有插件、过几秒
+                // 才多出 entry；以前按钮就在那一刻从「打开窗口」翻成「打开」，
+                // 用户一点就拉起了第二个实例 —— 而插件还在 A-Kit 里跑。
+                if let plugin, plugin.isActive {
+                    Button("打开窗口") { state.openPluginWindow(plugin.id) }
+                        .buttonStyle(AKPrimaryButtonStyle())
+                } else if entry.isInstalled {
                     Button("打开") { state.open(entry) }
                         .buttonStyle(AKPrimaryButtonStyle())
                 } else if entry.latest?.url != nil {
@@ -461,9 +469,16 @@ private struct ToolRowView: View {
                     Button("重建安装") { state.rebuild(entry) }
                         .buttonStyle(AKPrimaryButtonStyle(filled: false))
                 }
+                // 独立 app 正在跑、插件让位中：主操作变成「接管」
+                if let plugin, plugin.inactiveReason != nil, entry.isInstalled {
+                    Button("接管") { state.pluginManager.takeOver(pluginId: plugin.id) }
+                        .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                        .help(plugin.inactiveReason ?? "")
+                }
                 if entry.updateAvailable {
                     Button("更新") { state.install(entry, isUpdate: true) }
                         .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                        .disabled(state.job != nil)
                 }
                 Menu {
                     Button("详情") { state.selectedId = entry.id }
@@ -477,6 +492,9 @@ private struct ToolRowView: View {
                     }
                     if let plugin {
                         Divider()
+                        if plugin.isActive, entry.isInstalled {
+                            Button("启动独立 app（插件会退出）") { state.launchStandalone(entry) }
+                        }
                         Button("在访达中显示插件") {
                             NSWorkspace.shared.activateFileViewerSelecting(
                                 [URL(fileURLWithPath: plugin.record.bundlePath)])
@@ -1343,6 +1361,8 @@ private struct ToolDetailSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.ak) private var ak
     var entry: ToolEntry
+    /// 这个工具还带着插件时，详情页也得按「插件正在跑」来处理主操作
+    var plugin: LoadedPlugin? = nil
     @State private var confirmUninstall = false
 
     var body: some View {
@@ -1367,7 +1387,11 @@ private struct ToolDetailSheet: View {
                 }
 
                 HStack(spacing: 10) {
-                    if entry.isInstalled {
+                    // 有插件在跑时，「打开」= 打开它的窗口；拉独立 app 是次要动作
+                    if let plugin, plugin.isActive {
+                        Button("打开窗口") { state.openPluginWindow(plugin.id) }
+                            .buttonStyle(AKPrimaryButtonStyle())
+                    } else if entry.isInstalled {
                         Button("打开") { state.open(entry) }
                             .buttonStyle(AKPrimaryButtonStyle())
                         Button("在访达中显示") { state.reveal(entry) }
@@ -1375,6 +1399,11 @@ private struct ToolDetailSheet: View {
                     } else if entry.latest?.url != nil {
                         Button("安装") { state.install(entry, isUpdate: false) }
                             .buttonStyle(AKPrimaryButtonStyle())
+                    }
+                    if let plugin, plugin.inactiveReason != nil {
+                        Button("接管") { state.pluginManager.takeOver(pluginId: plugin.id) }
+                            .buttonStyle(AKPrimaryButtonStyle(filled: false))
+                            .help(plugin.inactiveReason ?? "")
                     }
                     if entry.updateAvailable {
                         Button("更新到 \(entry.latest?.version ?? "")") { state.install(entry, isUpdate: true) }

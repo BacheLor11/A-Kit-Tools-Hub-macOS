@@ -41,6 +41,19 @@ struct AKitMain {
             exit(0)
         }
 
+        // 开发用：--open-test <bundleId> 验证「点打开走哪条路」。
+        // 插件在跑却拉起独立 app 会变成两份实例，这条链路必须能离线复现。
+        if let i = args.firstIndex(of: "--open-test"), i + 1 < args.count {
+            openRouteTest(bundleId: args[i + 1])
+            return
+        }
+
+        // 开发用：--arbitration-test <bundleId> 真启动一次 app，验证插件让位 / 接回
+        if let i = args.firstIndex(of: "--arbitration-test"), i + 1 < args.count {
+            arbitrationTest(bundleId: args[i + 1])
+            return
+        }
+
         // 开发用：命令行把一个插件移出 A-Kit，等价于点界面上的「移出」
         if let i = args.firstIndex(of: "--remove-plugin"), i + 1 < args.count {
             _ = NSApplication.shared
@@ -63,6 +76,97 @@ struct AKitMain {
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()
+    }
+
+    /// 「点打开走哪条路」的离线验证：加载插件 → 等扫描 → 打印路由。
+    ///
+    /// 不真的拉起 app（那是副作用，测试里不该有），只看判断结果。
+    static func openRouteTest(bundleId: String) {
+        _ = NSApplication.shared
+        let state = AppState(bootstrap: false, startServer: false)
+        state.settings.scanDirectories = ["/Users/askb/Applications", "/Applications"]
+        state.settings.manifestURL = ""
+        state.pluginManager.scanAndLoad()
+        Task { await state.rescan() }
+
+        let deadline = Date().addingTimeInterval(6)
+        while Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            if !state.entities.isEmpty { break }
+        }
+
+        guard let entity = state.entities.first(where: {
+            ($0.entry?.installed?.bundleId ?? $0.id) == bundleId || $0.id == bundleId
+        }), let entry = entity.entry else {
+            print("FAIL: 找不到 \(bundleId)（entities=\(state.entities.map(\.id))）")
+            exit(1)
+        }
+
+        let plugin = state.pluginManager.plugin(forHostBundleId: bundleId)
+        print("entity   : \(entity.name) · entry=\(entity.entry != nil) · plugin=\(plugin?.record.id ?? "nil") · active=\(plugin?.isActive ?? false)")
+        switch state.openRoute(for: entry) {
+        case .pluginWindow(let id): print("route    : pluginWindow(\(id))")
+        case .standalone: print("route    : standalone")
+        }
+
+        // 走一遍真实入口，确认它没有把 app 拉起来
+        state.open(entry)
+        let after = state.pluginManager.plugin(forHostBundleId: bundleId)
+        print("after    : plugin.active=\(after?.isActive ?? false) reason=\(after?.inactiveReason ?? "nil")")
+        print("toast    : \(state.toast?.text ?? "nil")")
+        exit(0)
+    }
+
+    /// 真启动一次独立 app，看插件有没有让位、退出后有没有接回来。
+    ///
+    /// 这条用的是 NSWorkspace 的启停通知 —— 只在「加载插件那一刻」判断一次
+    /// 的老逻辑在这里会完整暴露（app 起来了插件还在跑）。
+    static func arbitrationTest(bundleId: String) {
+        _ = NSApplication.shared
+        let state = AppState(bootstrap: false, startServer: false)
+        state.settings.scanDirectories = ["/Users/askb/Applications", "/Applications"]
+        state.settings.manifestURL = ""
+        state.pluginManager.boot()
+
+        guard let plugin = state.pluginManager.plugin(forHostBundleId: bundleId) else {
+            print("FAIL: 没有 \(bundleId) 的插件")
+            exit(1)
+        }
+        print("before      : active=\(plugin.isActive) reason=\(plugin.inactiveReason ?? "nil")")
+
+        func pump(_ seconds: TimeInterval) {
+            RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        }
+
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
+            print("FAIL: LaunchServices 找不到 \(bundleId)")
+            exit(1)
+        }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, err in
+            if let err { print("open err: \(err.localizedDescription)") }
+        }
+        pump(3)
+        print("after launch: active=\(plugin.isActive) reason=\(plugin.inactiveReason ?? "nil")")
+
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId) {
+            app.terminate()
+        }
+        // terminate 是「请它退」，工具可能在收尾；等不到就强退，别让测试卡死
+        var waited: TimeInterval = 0
+        while Scanner.isRunning(bundleId: bundleId), waited < 8 {
+            pump(0.5); waited += 0.5
+        }
+        if Scanner.isRunning(bundleId: bundleId) {
+            print("terminate 没生效，改强退")
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId) {
+                app.forceTerminate()
+            }
+            pump(2)
+        }
+        print("after quit  : active=\(plugin.isActive) reason=\(plugin.inactiveReason ?? "nil") · running=\(Scanner.isRunning(bundleId: bundleId))")
+
+        state.pluginManager.shutdown()
+        exit(0)
     }
 
     /// 下载进度的冒烟测试：把 URL 存到 <path>，每 0.1 秒打一行采样。
@@ -684,7 +788,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let plugin = entity.plugin, kind == "ui" || entity.entry == nil {
             state.openPluginWindow(plugin.id)
         } else if let entry = entity.entry {
-            state.open(entry)
+            // 菜单里写的是「打开 app」，是明确表达：让插件先退出，再拉独立进程
+            state.launchStandalone(entry)
         }
     }
 

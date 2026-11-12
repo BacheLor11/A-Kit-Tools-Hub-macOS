@@ -14,6 +14,11 @@ final class LoadedPlugin: ObservableObject, Identifiable {
 
     let record: AKPluginRecord
     let descriptor: AKPluginDescriptor
+    /// 插件宿主 app 的 bundleId（插件住在 `Xxx.app/Contents/PlugIns/` 里时才有）。
+    ///
+    /// 只算一次：运行态仲裁要反复比对「这个 app 现在跑没跑」，
+    /// 每次都去 `Bundle(url:)` 太浪费，也容易在 app 被替换的瞬间读到半截。
+    let hostBundleId: String?
 
     /// 插件自己推的一行状态（折叠态显示）
     @Published var statusText: String?
@@ -33,6 +38,9 @@ final class LoadedPlugin: ObservableObject, Identifiable {
         self.record = record
         self.descriptor = descriptor
         self.statusText = descriptor.statusText()
+        self.hostBundleId = record.appPath.flatMap {
+            Bundle(url: URL(fileURLWithPath: $0))?.bundleIdentifier
+        }
     }
 
     /// 窄界面（面板里的卡片）。同一个工具只创建一次，之后复用。
@@ -130,6 +138,9 @@ final class PluginManager: NSObject, ObservableObject {
     private var disabled: Set<String> = []
     private var handles: [String: UnsafeMutableRawPointer] = [:]
     private var booted = false
+    /// 独立 app 启停的监听。插件和 app 是同一份工具的两种活法，
+    /// 谁在跑必须随时对齐 —— 只在启动时判断一次，用户中途打开 app 就会出现两份实例。
+    private var workspaceObservers: [NSObjectProtocol] = []
     /// 上次异常退出时正在加载的插件
     private(set) var crashSuspects: [String] = []
 
@@ -159,6 +170,7 @@ final class PluginManager: NSObject, ObservableObject {
         }
 
         sentinel.begin()
+        observeAppLifecycle()
         scanAndLoad()
     }
 
@@ -166,6 +178,9 @@ final class PluginManager: NSObject, ObservableObject {
     func shutdown() {
         for p in plugins { p.descriptor.deactivate() }
         sentinel.clear()
+        let nc = NSWorkspace.shared.notificationCenter
+        for token in workspaceObservers { nc.removeObserver(token) }
+        workspaceObservers.removeAll()
     }
 
     /// 重新扫描。用于装/卸插件之后。
@@ -217,10 +232,7 @@ final class PluginManager: NSObject, ObservableObject {
 
                 // 单实例仲裁：工具的独立 app 正在跑，插件就让位。
                 // 两个实例各跑一份引擎、同时清理同一块磁盘，那是数据安全问题。
-                let runningBundleId = record.appPath.flatMap {
-                    Bundle(url: URL(fileURLWithPath: $0))?.bundleIdentifier
-                }
-                let appIsRunning = runningBundleId.map { Scanner.isRunning(bundleId: $0) } ?? false
+                let appIsRunning = plugin.hostBundleId.map { Scanner.isRunning(bundleId: $0) } ?? false
                 if appIsRunning {
                     plugin.inactiveReason = "\(record.displayName) 正在独立运行"
                     AKLogInfo("plugin", "\(record.displayName) 独立运行中，插件让位")
@@ -235,6 +247,68 @@ final class PluginManager: NSObject, ObservableObject {
             }
         }
         objectWillChange.send()
+    }
+
+    // MARK: 运行态仲裁（插件 ↔ 独立 app）
+
+    /// 按宿主 bundleId 找插件（插件 id 与宿主 bundleId 都算，兼容不守约定的插件）
+    func plugin(forHostBundleId bundleId: String) -> LoadedPlugin? {
+        plugins.first { $0.record.id == bundleId || $0.hostBundleId == bundleId }
+    }
+
+    /// 监听独立 app 的启停。
+    ///
+    /// 以前只在加载插件的那一刻判断「app 是不是在跑」，之后就不再管了：
+    /// 用户从 Dock / Finder 打开 app，或者 A-Kit 自己把 app 拉起来，
+    /// 插件仍然在 A-Kit 进程里跑 —— 两份实例同时改同一份数据。
+    private func observeAppLifecycle() {
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification,
+                     NSWorkspace.didTerminateApplicationNotification] {
+            let token = nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      let bundleId = app.bundleIdentifier else { return }
+                Task { @MainActor [weak self] in self?.syncArbitration(bundleId: bundleId) }
+            }
+            workspaceObservers.append(token)
+        }
+    }
+
+    /// 把某个 app 的启停同步到它的插件上：app 起来插件立刻让位，app 退出去插件接回来。
+    ///
+    /// 只动「因为独立运行而让位」的那一类；用户手动禁用 / 接管失败的不碰。
+    func syncArbitration(bundleId: String) {
+        let running = Scanner.isRunning(bundleId: bundleId)
+        var changed = false
+        for p in plugins where p.hostBundleId == bundleId {
+            if running, p.isActive {
+                p.descriptor.deactivate()
+                p.inactiveReason = "\(p.record.displayName) 正在独立运行"
+                // 工具已经在外面跑起来了，A-Kit 里那扇窗再留着就是两份界面
+                PluginWindows.shared.close(p.id)
+                changed = true
+                AKLogInfo("plugin", "\(p.record.displayName) 的独立 app 启动了，插件让位")
+            } else if !running, !p.isActive, p.inactiveReason?.hasSuffix("正在独立运行") == true {
+                p.inactiveReason = nil
+                p.descriptor.activate()
+                changed = true
+                AKLogInfo("plugin", "\(p.record.displayName) 的独立 app 已退出，插件接回")
+            }
+        }
+        if changed { objectWillChange.send() }
+    }
+
+    /// A-Kit 自己要把工具以独立 app 跑起来之前调一次。
+    ///
+    /// 插件是 dlopen 在 A-Kit 进程里的，没法真的卸载；只能先 `deactivate()`
+    /// 停掉它的引擎并标记让位，等 app 退出后由 `syncArbitration` 接回来。
+    func yieldToStandalone(_ pluginId: String) {
+        guard let p = plugin(id: pluginId), p.isActive else { return }
+        p.descriptor.deactivate()
+        p.inactiveReason = "\(p.record.displayName) 正在独立运行"
+        PluginWindows.shared.close(p.id)
+        objectWillChange.send()
+        AKLogInfo("plugin", "\(p.record.displayName) 让位给独立 app")
     }
 
     // MARK: 启用 / 禁用
@@ -326,7 +400,8 @@ final class PluginManager: NSObject, ObservableObject {
             }
             if Scanner.isRunning(bundleId: bundleId) {
                 p.inactiveReason = "它没有退出，可能正在执行任务"
-            } else {
+            } else if !p.isActive {
+                // 退出通知可能已经把它接回来了，别 activate 第二遍
                 p.inactiveReason = nil
                 p.descriptor.activate()
                 AKLogInfo("plugin", "接管 \(pluginId) 完成")

@@ -371,8 +371,11 @@ final class AppState: ObservableObject {
 
     var updates: [ToolEntry] { entries.filter { $0.updateAvailable } }
 
-    /// 「已安装」的计数不含 A-Kit 自己 —— 它是宿主，不是被管理的工具
-    var installedCount: Int { allEntries.filter { $0.isInstalled && !isHostEntry($0) }.count }
+    /// 「已安装」的计数不含 A-Kit 自己 —— 它是宿主，不是被管理的工具。
+    ///
+    /// 口径跟工具页一致（用合并后的实体）：插件自带 appPath 时会合成一条安装信息，
+    /// 那时候列表显示「已安装」，顶栏却算 0 —— 同一个页面两个说法。
+    var installedCount: Int { entities.filter { $0.isInstalled }.count }
 
     /// 清单记录层面的「是不是我自己」，跟 `ToolEntity.isHost` 同一套判据
     func isHostEntry(_ e: ToolEntry) -> Bool {
@@ -1039,7 +1042,43 @@ final class AppState: ObservableObject {
 
     // MARK: 打开
 
+    /// 「打开」这个工具该走哪条路。
+    ///
+    /// 抽成独立判断是为了能离线验证：这条逻辑搞错的代价不是「按钮难看」，
+    /// 而是插件和独立 app 同时跑、两份引擎改同一块磁盘。
+    enum OpenRoute: Equatable {
+        case pluginWindow(String)
+        case standalone
+    }
+
+    func openRoute(for entry: ToolEntry) -> OpenRoute {
+        let bundleId = entry.installed?.bundleId ?? entry.id
+        if let plugin = pluginManager.plugin(forHostBundleId: bundleId), plugin.isActive {
+            return .pluginWindow(plugin.id)
+        }
+        return .standalone
+    }
+
+    /// 「打开」这个工具。
+    ///
+    /// **先看它现在是怎么活的**，再看有没有装 app：
+    /// 插件正在 A-Kit 里跑的时候，`NSWorkspace.open` 会拉起第二个实例，
+    /// 两份引擎同时改同一块磁盘。以前这里不看插件，所有入口
+    /// （工具行 / 详情 / 右键菜单）都会掉进这个坑。
     func open(_ entry: ToolEntry) {
+        switch openRoute(for: entry) {
+        case .pluginWindow(let id):
+            showToast("\(entry.name) 正以插件形态跑在 A-Kit 里，已打开它的窗口", ok: true)
+            openPluginWindow(id)
+        case .standalone:
+            launchStandalone(entry)
+        }
+    }
+
+    /// 明确要跑**独立 app**（插件在跑就先让它退出）。
+    ///
+    /// 只给「⋯ → 启动独立 app」这种用户明确表达的入口用，不挂在主按钮上。
+    func launchStandalone(_ entry: ToolEntry) {
         guard let app = entry.installed else {
             if entry.spec != nil {
                 install(entry, isUpdate: false)
@@ -1048,6 +1087,9 @@ final class AppState: ObservableObject {
                 showToast("找不到 \(entry.name) 的 .app 位置", ok: false)
             }
             return
+        }
+        if let plugin = pluginManager.plugin(forHostBundleId: app.bundleId) {
+            pluginManager.yieldToStandalone(plugin.id)
         }
         NSWorkspace.shared.openApplication(at: app.path, configuration: NSWorkspace.OpenConfiguration()) { _, err in
             if let err { AKLogInfo("open", "\(err.localizedDescription)") }
