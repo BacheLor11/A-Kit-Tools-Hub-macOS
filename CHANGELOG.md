@@ -7,6 +7,28 @@ A-Kit 的版本记录。倒序排列，最新在最上面。
 
 ---
 
+## 0.5.13 — 2026-11-12
+
+### 修复（0.5.12 装不上）
+
+- **0.5.12 的包用了一张已被吊销的证书签名，装上去根本起不来**。
+  签名身份是 `Apple Development: 572276303@qq.com (PLB55N633H)`，
+  `spctl -a` 直接给出 `CSSMERR_TP_CERT_REVOKED`；`codesign --verify` 却是「valid」，
+  所以打包脚本当时没看出来。表现是 `open` 报 `Launch failed / POSIX 163`，
+  直接跑二进制反而正常。
+  现在脚本签完会**回验**：`codesign --verify` 过了不算数，还要看 `spctl` 的评估结果里
+  有没有 `CSSMERR`，有就当场退回 ad-hoc —— 不会再产出起不来的包。
+- 功能与 0.5.12 相同（「打开」按运行形态判断、插件与独立 app 双向仲裁）。
+
+### 注意
+
+- 证书被吊销本身得你处理：Xcode → Settings → Accounts → Manage Certificates
+  重新生成一张 Apple Development 证书，再跑 `Scripts/build.sh` 就会自动用新的
+  （选择逻辑已经会跳过吊销的那张）。在那之前构建一律 ad-hoc：能用，
+  但每次重建都要去「输入监控」里把 A-Kit 删掉重授权一次。
+
+---
+
 ## 0.5.12 — 2026-11-12
 
 ### 修复

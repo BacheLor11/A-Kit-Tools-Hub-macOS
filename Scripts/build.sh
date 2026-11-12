@@ -63,18 +63,35 @@ echo "▸ 签名…"
 #
 # 这里故意不加 --options runtime：A-Kit 要 dlopen 各工具自己的插件，
 # 开了 hardened runtime 就会启用 library validation，别的 team / ad-hoc 签的插件会直接加载失败。
+#
+# 签完**必须再验一次**：证书被 Apple 吊销时 `codesign` 照样成功（签名结构是自洽的），
+# 但 launchd 会直接拒绝启动，报 `Launch failed / POSIX 163`。钥匙串里
+# `find-identity` 对已吊销证书的显示也不可靠（本地 CRL 可能没同步），
+# 唯一的真相是 `spctl` 的评估结果 —— 里面出现 CSSMERR 就说明证书链不可用。
+sign_ok=0
+verify_signature() {
+    codesign --verify --deep --strict "$APP" >/dev/null 2>&1 || return 1
+    local verdict
+    verdict=$(spctl -a -vvv "$APP" 2>&1 || true)
+    case "$verdict" in
+        *CSSMERR*) return 1 ;;
+    esac
+    return 0
+}
+
 if [ -z "${CODESIGN_ID:-}" ]; then
     CODESIGN_ID=$(security find-identity -v -p codesigning 2>/dev/null \
         | grep -v CSSMERR | grep 'Apple Development' | head -1 | awk '{print $2}' || true)
 fi
 if [ -n "${CODESIGN_ID:-}" ] && [ "$CODESIGN_ID" != "-" ]; then
-    if codesign --force --deep --sign "$CODESIGN_ID" "$APP" 2>/dev/null; then
+    if codesign --force --deep --sign "$CODESIGN_ID" "$APP" 2>/dev/null && verify_signature; then
+        sign_ok=1
         echo "  · 已签名：${CODESIGN_ID}（输入监控授权可跨构建保留）"
     else
-        echo "  ! 证书签名失败，退回 ad-hoc（每次重建都要重新授权输入监控）"
-        codesign --force --deep --sign - "$APP"
+        echo "  ! 证书签名不可用（多半已被吊销），退回 ad-hoc（每次重建都要重新授权输入监控）"
     fi
-else
+fi
+if [ "$sign_ok" = 0 ]; then
     codesign --force --deep --sign - "$APP"
     echo "  · ad-hoc 签名（每次重建都要重新授权输入监控）"
 fi
